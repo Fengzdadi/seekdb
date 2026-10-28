@@ -162,6 +162,16 @@ public:
       const common::ObString &parser_name,
       const common::ObString &parser_properties);
   /**
+   * initialize with the parser and properties of another initialized helper, without parsing
+   * the parser name and properties again
+   *
+   * @param[in] allocator
+   * @param[in] other, an initialized helper
+   *
+   * @return error code
+   */
+  int init(common::ObIAllocator *allocator, const ObFTParseHelper &other);
+  /**
    * Split document into multiple words
    *
    * @param[in] type, collation type for fulltext

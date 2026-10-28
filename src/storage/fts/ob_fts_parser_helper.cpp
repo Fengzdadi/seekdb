@@ -350,6 +350,24 @@ int ObFTParseHelper::init(
   return ret;
 }
 
+int ObFTParseHelper::init(common::ObIAllocator *allocator, const ObFTParseHelper &other)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(is_inited_)) {
+    ret = OB_INIT_TWICE;
+  } else if (OB_ISNULL(allocator) || OB_UNLIKELY(!other.is_inited_) || OB_ISNULL(other.parser_desc_)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    parser_name_ = other.parser_name_;
+    parser_property_ = other.parser_property_;
+    parser_desc_ = other.parser_desc_;
+    add_word_flag_ = other.add_word_flag_;
+    allocator_ = allocator;
+    is_inited_ = true;
+  }
+  return ret;
+}
+
 void ObFTParseHelper::reset()
 {
   parser_desc_ = nullptr;

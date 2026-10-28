@@ -350,7 +350,15 @@ int ObDDLLocalBuilder::push_task(ObAsyncTask &task)
 
 int64_t ObDDLLocalBuilder::get_thread_cnt_() const
 {
-  return lib::is_mini_mode() ? 1 : 16;
+  const int64_t max_thread_cnt = 16;
+  int64_t thread_cnt = max_thread_cnt;
+  if (lib::is_mini_mode()) {
+    // One DDL may build several independent tables, e.g. the doc id, inverted and forward index
+    // tables of a full-text index. A single thread builds them one after another, so scale the
+    // threads with the memory budget like other mini mode resources, down to one thread.
+    thread_cnt = MAX(1L, static_cast<int64_t>(max_thread_cnt * lib::mini_mode_resource_ratio()));
+  }
+  return thread_cnt;
 }
 
 }  // end namespace share

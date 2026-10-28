@@ -42,11 +42,15 @@ namespace sql
 namespace
 {
 // Without parser properties, the inner parser name and the parser properties made by parse_param()
-// only depend on the parser name given to TOKENIZE. Each thread keeps those of its last such call
-// to reuse them for the same parser name.
+// only depend on the parser name given to TOKENIZE. Each thread keeps those of its last such call,
+// and a parse helper initialized with them, to reuse them for the same parser name.
 class TokenizeSetupCache
 {
 public:
+  TokenizeSetupCache() : valid_(false), helper_alloc_(ObMemAttr("TokenizeSetup")) {}
+
+  const storage::ObFTParseHelper *helper() const { return valid_ ? &helper_ : nullptr; }
+
   bool match(const ObString &raw_name) const
   {
     return valid_ && raw_name_len_ == raw_name.length()
@@ -74,6 +78,7 @@ public:
   void set(const ObString &raw_name, const ObString &name, const ObString &properties)
   {
     valid_ = false;
+    helper_.reset();
     if (raw_name.length() <= static_cast<int64_t>(sizeof(raw_name_))
         && name.length() <= static_cast<int64_t>(sizeof(name_))
         && properties.length() <= static_cast<int64_t>(sizeof(properties_))) {
@@ -83,12 +88,15 @@ public:
       MEMCPY(name_, name.ptr(), name_len_);
       properties_len_ = properties.length();
       MEMCPY(properties_, properties.ptr(), properties_len_);
-      valid_ = true;
+      // helper_ only gives its setup to other helpers, so it never allocates from helper_alloc_
+      valid_ = OB_SUCCESS == helper_.init(&helper_alloc_, name, properties);
     }
   }
 
 private:
   bool valid_;
+  storage::ObFTParseHelper helper_;
+  ObArenaAllocator helper_alloc_;
   int64_t raw_name_len_;
   char raw_name_[storage::OB_FT_PARSER_NAME_LENGTH];
   int64_t name_len_;
@@ -151,7 +159,9 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  } else if (OB_FAIL(nullptr != param.setup_helper_
+                         ? tokenize_helper.init(&allocator, *param.setup_helper_)
+                         : tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
   } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
       (0 != param.fulltext_.length())
@@ -189,7 +199,8 @@ ObExprTokenize::TokenizeParam ::TokenizeParam()
     parser_name_(ObString(OB_DEFAULT_FULLTEXT_PARSER_NAME)),
     meta_(),
     fulltext_(),
-    output_mode_(OUTPUT_MODE::DEFAULT)
+    output_mode_(OUTPUT_MODE::DEFAULT),
+    setup_helper_(nullptr)
 {
 }
 
@@ -277,12 +288,15 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
   } else if (OB_FAIL(parse_parser_name(expr, ctx, raw_parser_name))) {
   } else if (!has_properties && setup_cache.match(raw_parser_name)) {
     if (OB_FAIL(setup_cache.get(allocator, param.parser_name_, param.properties_))) {
+    } else {
+      param.setup_helper_ = setup_cache.helper();
     }
   } else if (OB_FAIL(construct_ft_parser_inner_name(raw_parser_name, param))) {
   } else if (OB_FAIL(parse_parser_properties(expr, ctx, temp_allocator, param))) {
   } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
   } else if (!has_properties) {
     setup_cache.set(raw_parser_name, param.parser_name_, param.properties_);
+    param.setup_helper_ = setup_cache.helper();
   }
 
   if (OB_FAIL(ret)) {

@@ -25,6 +25,10 @@
 
 namespace oceanbase
 {
+namespace storage
+{
+class ObFTParseHelper;
+}
 namespace sql
 {
 class MultimodeAlloctor;
@@ -78,6 +82,8 @@ private:
       DEFAULT,
       ALL,
     } output_mode_;
+    // an initialized parse helper for parser_name_ and properties_ to copy the parser setup from
+    const storage::ObFTParseHelper *setup_helper_;
   };
 
 private:
