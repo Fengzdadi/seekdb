@@ -25,6 +25,7 @@
 #include "sql/session/ob_local_session_var.h"
 #include "query/command/ob_root_command_service.h"
 #include "query/vector/ob_vector_index_util.h"
+#include "sql/resolver/ddl/ob_ai_column_resolver.h"
 
 namespace oceanbase
 {
@@ -401,6 +402,12 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
       } else if (FALSE_IT(alter_table_stmt->inc_alter_table_action_count())) {
       } else {
         switch (action_node->type_) {
+        case T_ALTER_TABLE_RETRY_AI_COLUMN: {
+            if (OB_FAIL(AIColumnResolver::resolve_retry(params_, *action_node, node.num_child_,
+                                                        *table_schema_, *alter_table_stmt))) {
+            }
+            break;
+          }
         //deal with alter table option
         case T_ALTER_TABLE_OPTION: {
             alter_table_stmt->set_alter_table_option();
@@ -3455,8 +3462,15 @@ int ObAlterTableResolver::resolve_add_column(const ParseNode &node, ObColumnName
 
         //add column
         if (OB_SUCC(ret)) {
+          const ParseNode *ai_node = AIColumnResolver::get_ai_column_node(node.children_[i]);
           if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
           } else if (FALSE_IT(alter_table_stmt->set_sql_mode(session_info_->get_sql_mode()))) {
+          } else if (NULL != ai_node
+                     && OB_FAIL(AIColumnResolver::resolve_alter_column(params_, *ai_node,
+                                                                       *table_schema_,
+                                                                       alter_column_schema,
+                                                                       false,
+                                                                       *alter_table_stmt))) {
           }
         }
       }
@@ -3928,8 +3942,21 @@ int ObAlterTableResolver::resolve_change_column(const ParseNode &node)
         }
       }
       if (OB_SUCC(ret)) {
+        const ParseNode *ai_node = AIColumnResolver::get_ai_column_node(node.children_[1]);
+        const bool is_rename =
+            0 != origin_column_name.case_compare(alter_column_schema.get_column_name_str());
         alter_table_stmt->set_sql_mode(session_info_->get_sql_mode());
-        if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
+        if (OB_FAIL(AIColumnResolver::check_alter_column_allowed(
+                    *table_schema_, origin_column_name,
+                    is_rename ? AIColumnResolver::ALTER_RENAME : AIColumnResolver::ALTER_MODIFY,
+                    NULL != ai_node))) {
+        } else if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
+        } else if (NULL != ai_node
+                   && OB_FAIL(AIColumnResolver::resolve_alter_column(params_, *ai_node,
+                                                                     *table_schema_,
+                                                                     alter_column_schema,
+                                                                     true,
+                                                                     *alter_table_stmt))) {
         }
       }
     }
@@ -4078,7 +4105,17 @@ int ObAlterTableResolver::resolve_modify_column(const ParseNode &node,
           }
         }
         if (OB_SUCC(ret)) {
-          if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
+          const ParseNode *ai_node = AIColumnResolver::get_ai_column_node(node.children_[i]);
+          if (OB_FAIL(AIColumnResolver::check_alter_column_allowed(*table_schema_, column_name,
+                                                                   AIColumnResolver::ALTER_MODIFY,
+                                                                   NULL != ai_node))) {
+          } else if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
+          } else if (NULL != ai_node
+                     && OB_FAIL(AIColumnResolver::resolve_alter_column(params_, *ai_node,
+                                                                       *table_schema_,
+                                                                       alter_column_schema,
+                                                                       true,
+                                                                       *alter_table_stmt))) {
           }
         }
         if (OB_SUCC(ret)) {
@@ -4227,6 +4264,9 @@ int ObAlterTableResolver::resolve_drop_column(
                               true /* is_drop_column */))) {
         } else if (OB_FAIL(check_drop_column_is_partition_key(*table_schema_,
                                                               alter_column_schema.get_origin_column_name()))) {
+        } else if (OB_FAIL(AIColumnResolver::check_alter_column_allowed(
+                    *table_schema_, alter_column_schema.get_origin_column_name(),
+                    AIColumnResolver::ALTER_DROP, false))) {
         } else if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))){
         }
       }
@@ -4357,6 +4397,10 @@ int ObAlterTableResolver::resolve_rename_column(const ParseNode &node)
     } else if (OB_FAIL(alter_column_schema.set_column_name(new_column_name))) {
     } else if (OB_FAIL(check_mysql_rename_column(alter_column_schema, *table_schema_,
                                                  *alter_table_stmt))) {
+    } else if (0 != origin_column_name.case_compare(new_column_name)
+               && OB_FAIL(AIColumnResolver::check_alter_column_allowed(
+                          *table_schema_, origin_column_name, AIColumnResolver::ALTER_RENAME,
+                          false))) {
     } else {
       //rs end reuse ddl_change_column
       alter_column_schema.alter_type_ = OB_DDL_CHANGE_COLUMN;

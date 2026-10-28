@@ -624,6 +624,7 @@ public:
     has_nested_sql_ = false;
     tz_info_ = NULL;
     root_stmt_ = NULL;
+    ai_column_refs_.reset();
     udf_flag_ = 0;
     ori_question_marks_count_ = 0;
     filter_ds_stat_cache_.reuse();
@@ -715,6 +716,8 @@ public:
   bool has_nested_sql_;
   const common::ObTimeZoneInfo *tz_info_;
   ObDMLStmt *root_stmt_;
+  // (table id, column id) pairs of the AI columns referenced by the statement text
+  common::ObSEArray<uint64_t, 4, common::ModulePageAllocator, true> ai_column_refs_;
   union {
     int8_t udf_flag_;
     struct {

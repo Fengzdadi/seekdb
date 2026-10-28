@@ -35,6 +35,7 @@
 #include "sql/resolver/ddl/ob_fork_database_resolver.h"
 #include "sql/resolver/ddl/ob_create_table_like_resolver.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
+#include "sql/resolver/ddl/ob_ai_column_resolver.h"
 #include "sql/resolver/ddl/ob_drop_table_resolver.h"
 #include "sql/resolver/ddl/ob_create_index_resolver.h"
 #include "sql/resolver/ddl/ob_drop_index_resolver.h"
@@ -407,6 +408,7 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       case T_SHOW_DATABASES:
       case T_SHOW_VARIABLES:
       case T_SHOW_COLUMNS:
+      case T_SHOW_AI_COLUMNS:
       case T_SHOW_SCHEMA:
       case T_SHOW_CREATE_DATABASE:
       case T_SHOW_CREATE_TABLE:
@@ -667,6 +669,8 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         params_.query_ctx_->is_contain_inner_table_ = is_contain_inner_table;
         params_.query_ctx_->is_contain_select_for_update_ = is_contain_select_for_update;
         params_.query_ctx_->has_dml_write_stmt_ = dml_stmt->is_dml_write_stmt();
+      }
+      if (OB_SUCC(ret) && OB_FAIL(AIColumnResolver::collect_column_refs(params_, *dml_stmt))) {
       }
 
     }

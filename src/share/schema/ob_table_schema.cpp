@@ -1146,7 +1146,8 @@ ObTableSchema::ObTableSchema(ObIAllocator *allocator)
     micro_index_clustered_(false),
     index_params_(),
     exec_env_(),
-    semistruct_encoding_type_()
+    semistruct_encoding_type_(),
+    ai_column_meta_()
 {
   reset();
 }
@@ -1323,6 +1324,9 @@ int ObTableSchema::assign(const ObTableSchema &src_schema)
   }
 
   if (OB_SUCC(ret) && OB_FAIL(deep_copy_str(src_schema.exec_env_, exec_env_))) {
+  }
+
+  if (OB_SUCC(ret) && OB_FAIL(deep_copy_str(src_schema.ai_column_meta_, ai_column_meta_))) {
   }
 
   if (OB_SUCC(ret)) {
@@ -2524,6 +2528,7 @@ int64_t ObTableSchema::get_convert_size() const
   }
 
   convert_size += index_params_.length() + 1;
+  convert_size += ai_column_meta_.length() + 1;
 
   convert_size += semistruct_encoding_type_.get_deep_copy_size();
   return convert_size;
@@ -2595,6 +2600,7 @@ void ObTableSchema::reset()
 
   index_params_.reset();
   exec_env_.reset();
+  ai_column_meta_.reset();
   name_generated_type_ = GENERATED_TYPE_UNKNOWN;
   lob_inrow_threshold_ = OB_DEFAULT_LOB_INROW_THRESHOLD;
   auto_increment_cache_size_ = 0;
@@ -5406,6 +5412,7 @@ OB_DEF_SERIALIZE(ObTableSchema)
   OB_UNIS_ENCODE(parser_properties_);
   OB_UNIS_ENCODE(semistruct_encoding_type_);
   OB_UNIS_ENCODE(micro_block_format_version_);
+  OB_UNIS_ENCODE(ai_column_meta_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment
@@ -5609,6 +5616,7 @@ OB_DEF_DESERIALIZE(ObTableSchema)
   OB_UNIS_DECODE_AND_FUNC(parser_properties_, deep_copy_str);
   OB_UNIS_DECODE(semistruct_encoding_type_);
   OB_UNIS_DECODE(micro_block_format_version_);
+  OB_UNIS_DECODE_AND_FUNC(ai_column_meta_, deep_copy_str);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment
@@ -5719,6 +5727,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchema)
   OB_UNIS_ADD_LEN(parser_properties_);
   OB_UNIS_ADD_LEN(semistruct_encoding_type_);
   OB_UNIS_ADD_LEN(micro_block_format_version_);
+  OB_UNIS_ADD_LEN(ai_column_meta_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment

@@ -39,8 +39,9 @@ public:
   static int eval_uuid_short(const ObExpr &expr,
                       ObEvalCtx &ctx,
                       ObDatum &expr_datum);
-private:
+  // also used to generate AI column request ids
   static uint64_t generate_uuid_short();
+private:
   DISALLOW_COPY_AND_ASSIGN(ObExprUuidShort) const;
 };
 

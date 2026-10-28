@@ -528,6 +528,12 @@ private:
 private:
   bool insertup_can_do_gts_opt_;
   int64_t px_worker_share_plan_enabled_;
+public:
+  // (table id, column id) pairs of the AI columns the statement refers to, checked by strict reads
+  int set_ai_column_refs(const common::ObIArray<uint64_t> &refs) { return ai_column_refs_.assign(refs); }
+  const common::ObIArray<uint64_t> &get_ai_column_refs() const { return ai_column_refs_; }
+private:
+  common::ObFixedArray<uint64_t, common::ObIAllocator> ai_column_refs_;
 };
 
 inline void ObPhysicalPlan::set_affected_last_insert_id(bool affected_last_insert_id)

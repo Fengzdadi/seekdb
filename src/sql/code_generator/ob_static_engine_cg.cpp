@@ -5759,6 +5759,10 @@ int ObStaticEngineCG::set_properties_post(const ObLogPlan &log_plan, ObPhysicalP
     if (exec_ctx->get_stmt_factory()->get_query_ctx()->has_nested_sql()) {
       phy_plan.set_has_nested_sql(exec_ctx->get_stmt_factory()->get_query_ctx()->has_nested_sql());
     }
+    if (OB_FAIL(phy_plan.set_ai_column_refs(
+                exec_ctx->get_stmt_factory()->get_query_ctx()->ai_column_refs_))) {
+      LOG_WARN("failed to set ai column refs", K(ret));
+    }
     if (log_plan.get_stmt()->is_insert_stmt()) {
       phy_plan.set_autoinc_params(log_plan.get_stmt()->get_autoinc_params());
     }

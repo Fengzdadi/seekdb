@@ -160,9 +160,11 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
         break;
       } else {
         LOG_WARN("retryable http status code", K(http_code), K(i));
-        int64_t delay_ms = 1000 * (1 << i) + rand() % 1000;
-        ob_usleep(delay_ms * 1000);
-        response_buf.reset();
+        if (i < max_retry_times_) {
+          int64_t delay_ms = 1000 * (1 << i) + rand() % 1000;
+          ob_usleep(delay_ms * 1000);
+          response_buf.reset();
+        }
       }
     }
     if (OB_SUCC(ret)) {

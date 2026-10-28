@@ -308,6 +308,11 @@ private:
                        const IndexDMLInfo &dml_info,
                        ObDMLBaseCtDef &dml_ctdef,
                        uint64_t dml_event);
+  // AI column task maintenance of the primary table, assign_idxs is given for UPDATE only
+  int convert_ai_columns(ObLogDelUpd &log_op,
+                         const IndexDMLInfo &dml_info,
+                         ObDMLBaseCtDef &dml_ctdef,
+                         const common::ObIArray<int64_t> *assign_idxs);
   int add_all_column_infos(ObLogDelUpd &op,
                            const common::ObIArray<ObColumnRefRawExpr*> &columns,
                            bool is_heap_table,

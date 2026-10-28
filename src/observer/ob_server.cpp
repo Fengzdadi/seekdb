@@ -21,6 +21,7 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include "share/rc/ob_server_runtime.h"
+#include "observer/ai_column/ob_ai_column_worker.h"
 #include <fcntl.h>
 #include <sys/file.h>
 #else
@@ -944,6 +945,10 @@ void ObServer::destroy()
     ObTimerMonitor::get_instance().destroy();
     FLOG_INFO("timer monitor destroyed");
 
+    FLOG_INFO("begin to destroy ai column worker");
+    AIColumnWorker::get_instance().destroy();
+    FLOG_INFO("ai column worker destroyed");
+
     FLOG_INFO("begin to destroy schema service");
     schema_service_.destroy();
     if (OB_NOT_NULL(schema_refresh_scheduler_)) {
@@ -1350,6 +1355,13 @@ int ObServer::start()
     GCTX.status_ = SS_SERVING;
     GCTX.start_service_time_ = start_service_time;
     FLOG_INFO("[OBSERVER_NOTICE] observer start service", "start_service_time", GCTX.start_service_time_);
+    // AI column values are generated in the background; a failure here only delays them
+    int tmp_ret = OB_SUCCESS;
+    if (OB_SUCCESS != (tmp_ret = AIColumnWorker::get_instance().init())) {
+      LOG_WARN("failed to init ai column worker", KR(tmp_ret));
+    } else if (OB_SUCCESS != (tmp_ret = AIColumnWorker::get_instance().start())) {
+      LOG_WARN("failed to start ai column worker", KR(tmp_ret));
+    }
     LOG_DBA_INFO_V2(OB_SERVER_START_SUCCESS,
                     DBA_STEP_INC_INFO(server_start),
                     "observer start success.");
@@ -1644,6 +1656,11 @@ int ObServer::stop()
     FLOG_INFO("begin to stop server startup task handler");
     startup_accel_handler_.stop();
     FLOG_INFO("server startup task handler stopped");
+
+    FLOG_INFO("begin to stop ai column worker");
+    AIColumnWorker::get_instance().stop();
+    AIColumnWorker::get_instance().wait();
+    FLOG_INFO("ai column worker stopped");
 
     // It will wait for all requests done.
     FLOG_INFO("begin to stop server runtime");

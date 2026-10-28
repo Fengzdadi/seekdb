@@ -19,6 +19,7 @@
 #include "sql/das/ob_das_dml_ctx_define.h"
 #include "sql/das/ob_das_ref.h"
 #include "sql/das/ob_das_scan_op.h"
+#include "sql/engine/dml/ob_ai_column_dml.h"
 namespace oceanbase
 {
 namespace sql
@@ -414,7 +415,8 @@ public:
                        K_(view_check_exprs),
                        K_(is_primary_index),
                        K_(is_table_without_pk),
-                       KPC_(trans_info_expr));
+                       KPC_(trans_info_expr),
+                       K_(ai_ctdef));
 
   ObDMLOpType dml_type_;
   ExprFixedArray check_cst_exprs_;
@@ -438,6 +440,7 @@ public:
   bool reserved_advanced_trigger_;
   ObExpr *trans_info_expr_;
   bool is_vec_hnsw_index_vid_opt_;
+  AIColumnDMLCtDef ai_ctdef_;
 protected:
   ObDMLBaseCtDef(common::ObIAllocator &alloc,
                  ObDASDMLBaseCtDef &das_base_ctdef,
@@ -456,7 +459,8 @@ protected:
       is_table_without_pk_(false),
       reserved_advanced_trigger_(false),
       trans_info_expr_(nullptr),
-      is_vec_hnsw_index_vid_opt_(false)
+      is_vec_hnsw_index_vid_opt_(false),
+      ai_ctdef_(alloc)
   { }
 };
 
