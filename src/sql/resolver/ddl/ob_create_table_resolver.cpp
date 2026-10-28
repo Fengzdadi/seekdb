@@ -25,6 +25,7 @@
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "query/vector/ob_vector_index_util.h"
 #include "sql/resolver/ddl/ob_vec_index_builder_util.h"
+#include "sql/resolver/ddl/ob_ai_column_resolver.h"
 
 namespace oceanbase
 {
@@ -297,9 +298,19 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
         if (OB_SUCC(ret)) {
           if (false == is_create_as_sel) {
             if (OB_FAIL(resolve_table_elements(table_element_list_node, index_node_position_list, foreign_key_node_position_list, table_level_constraint_list, RESOLVE_ALL))) {
+            } else if (OB_NOT_NULL(table_element_list_node)
+                       && OB_FAIL(AIColumnResolver::resolve_create_table(params_,
+                                                                         *table_element_list_node,
+                                                                         table_name_,
+                                                                         get_primary_key_size() > 0,
+                                                                         create_table_stmt->get_create_table_arg().schema_,
+                                                                         cur_column_id_))) {
             }
           } else {
-            if (OB_FAIL(resolve_table_elements(table_element_list_node, index_node_position_list, foreign_key_node_position_list, table_level_constraint_list, RESOLVE_COL_ONLY))) {
+            if (AIColumnResolver::has_ai_column(table_element_list_node)) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI COLUMN in CREATE TABLE ... SELECT");
+            } else if (OB_FAIL(resolve_table_elements(table_element_list_node, index_node_position_list, foreign_key_node_position_list, table_level_constraint_list, RESOLVE_COL_ONLY))) {
             } else if (OB_FAIL(resolve_insert_mode(&parse_tree))) {
             } else if (OB_FAIL(resolve_table_elements_from_select(parse_tree))) {
             } else if (OB_FAIL(resolve_table_elements(table_element_list_node, index_node_position_list, foreign_key_node_position_list, table_level_constraint_list, RESOLVE_NON_COL))) {

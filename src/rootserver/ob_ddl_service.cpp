@@ -36,6 +36,7 @@
 #include "sql/session/ob_local_session_var.h"
 #include "sql/engine/cmd/ob_partition_executor_utils.h"
 #include "share/ob_global_stat_proxy.h"
+#include "share/schema/ob_ai_column_schema.h"
 #include "rootserver/fork_table/ob_fork_table_util.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_modify_column_name.h"
@@ -10441,6 +10442,8 @@ int ObDDLService::alter_table_in_trans(obcall::ObAlterTableArg &alter_table_arg,
                                                 ddl_operator,
                                                 trans,
                                                 &global_idx_schema_array))) {
+          } else if (OB_FAIL(share::schema::AIColumnSqlService::on_alter_table(
+                         trans, *orig_table_schema, alter_table_schema, new_table_schema))) {
           }
         }
         //table options
@@ -12429,6 +12432,7 @@ int ObDDLService::alter_table(obcall::ObAlterTableArg &alter_table_arg,
   }
 
   ObSimpleTableSchemaV2 orig_table;
+  bool orig_has_ai_column = false;
   if (OB_SUCC(ret)) {
     AlterTableSchema &alter_table_schema = alter_table_arg.alter_table_schema_;
     ObSchemaGetterGuard schema_guard;
@@ -12455,6 +12459,8 @@ int ObDDLService::alter_table(obcall::ObAlterTableArg &alter_table_arg,
         } else if (NULL == orig_table_schema) {
           ret = OB_ERR_UNEXPECTED;
         } else if (OB_FAIL(orig_table.assign(*orig_table_schema))) {
+        } else {
+          orig_has_ai_column = orig_table_schema->has_ai_column();
         }
       }
     }
@@ -12485,7 +12491,12 @@ int ObDDLService::alter_table(obcall::ObAlterTableArg &alter_table_arg,
       } else {
         // offline ddl cannot appear at the same time with other ddl types
         if (is_long_running_ddl(ddl_type)) {
-          if (OB_FAIL(do_offline_ddl_in_trans(alter_table_arg, data_format_version, res))) {
+          if (is_double_table_long_running_ddl(ddl_type)
+              && (orig_has_ai_column || alter_table_arg.alter_table_schema_.has_ai_column())) {
+            // AI column definitions and tasks are bound to the table id
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "offline DDL on a table with AI columns");
+          } else if (OB_FAIL(do_offline_ddl_in_trans(alter_table_arg, data_format_version, res))) {
           }
         } else {
           if (OB_FAIL(alter_table_in_trans(alter_table_arg, res, data_format_version))) {
@@ -16135,6 +16146,10 @@ int ObDDLService::new_truncate_table_in_trans(const ObIArray<const ObTableSchema
         }// 1503 boundary
         else if (OB_FAIL(ddl_operator.update_boundary_schema_version(boundary_schema_version,
                                                                      trans))) {
+        } else if (orig_table_schemas.at(0)->has_ai_column()
+                   && OB_FAIL(share::schema::AIColumnSqlService::delete_tasks(
+                       trans, orig_table_schemas.at(0)->get_table_id(), OB_INVALID_ID))) {
+          // the pending AI column tasks belong to the truncated rows
         }
       }
     } // else

@@ -2467,6 +2467,74 @@ all_objauth_mysql_def = dict(
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
 
+# 1140: __all_ai_column
+# One row per AI column. Written in the DDL transaction that creates or changes the column.
+all_ai_column_def = dict(
+  owner = 'seekdb',
+  table_name = '__all_ai_column',
+  table_id = '1140',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('table_id', 'int'),
+    ('column_id', 'int')
+  ],
+  is_cluster_private = False,
+  meta_record_in_sys = False,
+  normal_columns = [
+    ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false'),
+    ('state_column_id', 'int', 'false'),
+    ('request_column_id', 'int', 'false'),
+    ('result_spec_column_id', 'int', 'false'),
+    ('function_name', 'varchar:128', 'false'),
+    ('model_name', 'varchar:128', 'false'),
+    ('expr_str', 'longtext', 'true'),
+    ('normalized_expr', 'longtext', 'false'),
+    ('prompt_expr', 'longtext', 'false'),
+    ('type_prompt', 'longtext', 'true'),
+    ('config', 'longtext', 'true'),
+    ('dependency_column_ids', 'varchar:4096', 'false', ''),
+    ('dependency_column_names', 'longtext', 'true'),
+    ('result_type', 'varchar:256', 'false', ''),
+    ('vector_dimension', 'int', 'false', '0'),
+    ('sync_mode', 'varchar:32', 'false', 'async'),
+    ('max_retries', 'int', 'false', '0'),
+    ('definition_version', 'int', 'false', '1')
+  ]
+)
+def_table_schema(**all_ai_column_def)
+
+# 1141: __all_ai_column_task
+# Pending AI column work. A row is created in the same transaction as the business change that
+# invalidates an AI column value and is removed when the value is published or superseded.
+all_ai_column_task_def = dict(
+  owner = 'seekdb',
+  table_name = '__all_ai_column_task',
+  table_id = '1141',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('table_id', 'int'),
+    ('rowkey_predicate', 'varchar:3072'),
+    ('column_id', 'int')
+  ],
+  is_cluster_private = False,
+  meta_record_in_sys = False,
+  normal_columns = [
+    ('request_id', 'uint', 'false'),
+    ('definition_version', 'int', 'false', '1'),
+    ('state', 'int', 'false', '0'),
+    ('retry_count', 'int', 'false', '0'),
+    ('max_retries', 'int', 'false', '0'),
+    ('eligible_ts', 'timestamp', 'false'),
+    ('owner', 'varchar:128', 'true'),
+    ('lease_expire_ts', 'timestamp', 'true'),
+    ('result', 'longtext', 'true'),
+    ('last_error', 'varchar:4096', 'true')
+  ]
+)
+def_table_schema(**all_ai_column_task_def)
+
 
 # Reserved position (placeholder before this line)
 # Placeholder suggestion for this section: Use actual table names for placeholders

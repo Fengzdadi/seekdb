@@ -111,7 +111,8 @@ ObPhysicalPlan::ObPhysicalPlan(MemoryContext &mem_context /* = CURRENT_CONTEXT *
     need_switch_to_table_lock_worker_(false),
     data_complement_gen_doc_id_(false),
     insertup_can_do_gts_opt_(false),
-    px_worker_share_plan_enabled_(false)
+    px_worker_share_plan_enabled_(false),
+    ai_column_refs_(allocator_)
 {
 }
 
@@ -193,6 +194,7 @@ void ObPhysicalPlan::reset()
   data_complement_gen_doc_id_ = false;
   insertup_can_do_gts_opt_ = false;
   px_worker_share_plan_enabled_ = false;
+  ai_column_refs_.reset();
 }
 void ObPhysicalPlan::destroy()
 {

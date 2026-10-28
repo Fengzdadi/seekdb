@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_insert_resolver.h"
+#include "sql/resolver/ddl/ob_ai_column_resolver.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/rewrite/ob_transform_utils.h"
 #include "ob_default_value_utils.h"
@@ -121,6 +122,8 @@ int ObInsertResolver::resolve_insert_clause(const ParseNode &node)
   } else if (OB_FAIL(resolve_insert_field(*insert_into, table_item))) {
   } else if (OB_FAIL(resolve_values(*values_node,
                                     table_item, node.children_[DUPLICATE_NODE]))) {
+  } else if (OB_NOT_NULL(table_item)
+             && OB_FAIL(AIColumnResolver::check_insert_values(params_, *table_item, *insert_stmt))) {
   } else {
     if (!insert_stmt->get_table_items().empty() &&
         NULL != insert_stmt->get_table_item(0) &&

@@ -20,6 +20,7 @@
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "share/ob_server_struct.h"
 #include "sql/engine/cmd/ob_table_executor.h"
+#include "sql/engine/cmd/ob_ai_column_executor.h"
 #include "query/command/ob_root_command_service.h"
 #include "query/command/ob_root_service_serialization.h"
 #include "query/runtime/ob_query_runtime_environment.h"
@@ -769,6 +770,16 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
           [&]{ return ctx.root_command_service().alter_trigger(stmt.get_tg_arg()); }),
           GCTX.self_addr());
     }
+  } else if (stmt.is_ai_column_retry()) {
+    if (OB_ISNULL(ctx.get_my_session())) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(AIColumnExecutor::retry(*ctx.get_my_session(),
+                                               alter_table_arg.alter_table_schema_.get_origin_database_name(),
+                                               alter_table_arg.alter_table_schema_.get_origin_table_name(),
+                                               stmt.get_ai_retry_column_name(),
+                                               stmt.get_ai_retry_where()))) {
+      LOG_WARN("failed to retry ai column", K(ret));
+    }
   } else {
     ObSQLSessionInfo *my_session = NULL;
     obcall::ObAlterTableRes res;
@@ -865,6 +876,16 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
             res.task_id_, res.ddl_need_retry_at_executor_, my_session,
             *ctx.get_query_runtime_environment(), ctx.local_command_service(), is_support_cancel))) {
         }
+      }
+    }
+    // values of AI columns added or redefined by this statement are generated for every row
+    if (OB_SUCC(ret) && !stmt.get_ai_refresh_columns().empty()) {
+      if (OB_FAIL(refresh_schema_for_table())) {
+      } else if (OB_FAIL(AIColumnExecutor::refresh(*my_session,
+                                                   alter_table_arg.alter_table_schema_.get_origin_database_name(),
+                                                   alter_table_arg.alter_table_schema_.get_origin_table_name(),
+                                                   stmt.get_ai_refresh_columns()))) {
+        LOG_WARN("failed to refresh ai columns", K(ret));
       }
     }
     char table_info_buffer[256];

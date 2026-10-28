@@ -86,6 +86,8 @@ int ObDmlCgService::generate_insert_ctdef(ObLogDelUpd &op,
                                                 index_dml_info,
                                                 new_row,
                                                 ins_ctdef.related_ctdefs_))) {
+  } else if (!op.is_pdml_update_split()
+             && OB_FAIL(convert_ai_columns(op, index_dml_info, ins_ctdef, NULL))) {
   }
   // generate for replace into and insert_up fetch conflict rowkey
   if (OB_SUCC(ret) && op.get_stmt()->is_insert_stmt() &&
@@ -185,6 +187,8 @@ int ObDmlCgService::generate_delete_ctdef(ObLogDelUpd &op,
                                                 index_dml_info,
                                                 old_row,
                                                 del_ctdef.related_ctdefs_))) {
+  } else if (!op.is_pdml_update_split()
+             && OB_FAIL(convert_ai_columns(op, index_dml_info, del_ctdef, NULL))) {
   } else {
     del_ctdef.need_check_filter_null_ = index_dml_info.need_filter_null_;
     del_ctdef.distinct_algo_ = index_dml_info.distinct_algo_;
@@ -309,6 +313,7 @@ int ObDmlCgService::generate_update_ctdef(ObLogDelUpd &op,
   bool is_update_uk = false;
   const ObAssignments &assigns = index_dml_info.assignments_;
   bool gen_expand_ctdef = false;
+  ObSEArray<int64_t, 16> assign_idxs;
   if (OB_FAIL(old_row.assign(index_dml_info.column_old_values_exprs_))) {
   } else if (OB_FAIL(new_row.assign(old_row))) {
   } else if (OB_FAIL(append(full_row, old_row))) {
@@ -322,6 +327,7 @@ int ObDmlCgService::generate_update_ctdef(ObLogDelUpd &op,
                             &assign_idx)) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(full_row.push_back(assign_expr))) {
+    } else if (OB_FAIL(assign_idxs.push_back(assign_idx))) {
     } else {
       new_row.at(assign_idx) = assign_expr;
     }
@@ -355,6 +361,7 @@ int ObDmlCgService::generate_update_ctdef(ObLogDelUpd &op,
   } else if (OB_FAIL(convert_upd_assign_infos(upd_ctdef.is_table_without_pk_,
                                               index_dml_info,
                                               upd_ctdef.assign_columns_))) {
+  } else if (OB_FAIL(convert_ai_columns(op, index_dml_info, upd_ctdef, &assign_idxs))) {
   } else {
     upd_ctdef.need_check_filter_null_ = index_dml_info.need_filter_null_;
     upd_ctdef.distinct_algo_ = index_dml_info.distinct_algo_;
@@ -2171,6 +2178,33 @@ int ObDmlCgService::convert_triggers(ObLogDelUpd &log_op,
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(convert_normal_triggers(log_op, dml_info, dml_ctdef, dml_event))) {
+  }
+  return ret;
+}
+
+int ObDmlCgService::convert_ai_columns(ObLogDelUpd &log_op,
+                                       const IndexDMLInfo &dml_info,
+                                       ObDMLBaseCtDef &dml_ctdef,
+                                       const ObIArray<int64_t> *assign_idxs)
+{
+  int ret = OB_SUCCESS;
+  ObLogPlan *log_plan = log_op.get_plan();
+  ObSchemaGetterGuard *schema_guard = NULL;
+  const ObTableSchema *table_schema = NULL;
+  if (!dml_info.is_primary_index_) {
+  } else if (OB_ISNULL(log_plan) || OB_ISNULL(cg_.phy_plan_)
+             || OB_ISNULL(schema_guard = log_plan->get_optimizer_context().get_schema_guard())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(schema_guard->get_table_schema(dml_info.ref_table_id_, table_schema))) {
+  } else if (OB_ISNULL(table_schema) || !table_schema->has_ai_column()) {
+  } else if (OB_FAIL(dml_ctdef.ai_ctdef_.init(cg_.phy_plan_->get_allocator(),
+                                              *table_schema,
+                                              dml_ctdef.column_ids_,
+                                              assign_idxs))) {
+    LOG_WARN("failed to init ai column ctdef", K(ret));
+  } else if (dml_ctdef.ai_ctdef_.is_valid()) {
+    // tasks are written by nested SQL in the transaction of the DML
+    cg_.phy_plan_->set_has_nested_sql(true);
   }
   return ret;
 }

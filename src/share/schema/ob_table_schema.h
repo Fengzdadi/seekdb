@@ -1084,6 +1084,7 @@ public:
   void clear_constraint();
   int set_index_params(const common::ObString &index_params) { return deep_copy_str(index_params, index_params_); }
   int set_exec_env(const common::ObString &exec_env) { return deep_copy_str(exec_env, exec_env_); }
+  int set_ai_column_meta(const common::ObString &ai_column_meta) { return deep_copy_str(ai_column_meta, ai_column_meta_); }
   void set_lob_inrow_threshold(const int64_t lob_inrow_threshold) { lob_inrow_threshold_ = lob_inrow_threshold;}
   inline void set_auto_increment_cache_size(const int64_t auto_increment_cache_size)
   { auto_increment_cache_size_ = auto_increment_cache_size; }
@@ -1155,6 +1156,9 @@ public:
   inline const ObViewSchema &get_view_schema() const { return view_schema_; }
   inline const common::ObString &get_index_params() const { return index_params_; }
   inline const common::ObString &get_exec_env() const { return exec_env_; }
+  // serialized share::schema::AIColumnMeta, empty when the table has no AI column
+  inline const common::ObString &get_ai_column_meta() const { return ai_column_meta_; }
+  inline bool has_ai_column() const { return !ai_column_meta_.empty(); }
   inline int64_t get_lob_inrow_threshold() const { return lob_inrow_threshold_; }
   inline int64_t get_auto_increment_cache_size() const { return auto_increment_cache_size_; }
   bool has_check_constraint() const;
@@ -1656,6 +1660,8 @@ protected:
   // exec_env
   common::ObString exec_env_;
   ObSemiStructEncodingType semistruct_encoding_type_;
+  // AI column definitions, see ob_ai_column_schema.h
+  common::ObString ai_column_meta_;
 };
 
 class ObPrintableTableSchema final : public ObTableSchema

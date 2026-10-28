@@ -2255,6 +2255,10 @@ int ObDMLService::handle_after_row_processing(ObTableModifyOp *op,
   } else {
     ret = handle_after_processing_multi_row(dml_modify_rows, op);
   }
+  if (OB_SUCC(ret) && NULL != op && NULL != dml_modify_rows && dml_modify_rows->size() > 0
+      && OB_FAIL(AIColumnDMLHandler::handle(*op, *dml_modify_rows))) {
+    LOG_WARN("failed to maintain ai column tasks", K(ret));
+  }
   return ret;
 }
 

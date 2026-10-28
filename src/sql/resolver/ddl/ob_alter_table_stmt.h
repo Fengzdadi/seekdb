@@ -104,6 +104,22 @@ public:
     alter_table_arg_.lock_session_create_ts_ = create_ts;
   }
   void set_lock_priority();
+
+  // ALTER TABLE ... RETRY AI COLUMN col [WHERE cond]
+  bool is_ai_column_retry() const { return is_ai_column_retry_; }
+  void set_ai_column_retry(const common::ObString &column_name, const common::ObString &where_str)
+  {
+    is_ai_column_retry_ = true;
+    ai_retry_column_name_ = column_name;
+    ai_retry_where_ = where_str;
+  }
+  const common::ObString &get_ai_retry_column_name() const { return ai_retry_column_name_; }
+  const common::ObString &get_ai_retry_where() const { return ai_retry_where_; }
+  // AI columns added or redefined by this statement, their values are regenerated after the DDL
+  int add_ai_refresh_column(const common::ObString &column_name)
+  { return ai_refresh_columns_.push_back(column_name); }
+  const common::ObIArray<common::ObString> &get_ai_refresh_columns() const
+  { return ai_refresh_columns_; }
 private:
   obcall::ObAlterTableArg alter_table_arg_;
   bool is_comment_table_;
@@ -114,6 +130,10 @@ private:
   obcall::ObAlterTriggerArg tg_arg_;
   uint64_t alter_table_action_count_;
   obcall::ObExchangePartitionArg exchange_partition_arg_;
+  bool is_ai_column_retry_;
+  common::ObString ai_retry_column_name_;
+  common::ObString ai_retry_where_;
+  common::ObSEArray<common::ObString, 2> ai_refresh_columns_;
 };
 
 inline int ObAlterTableStmt::set_tz_info_wrap(const common::ObTimeZoneInfoWrap &tz_info_wrap)

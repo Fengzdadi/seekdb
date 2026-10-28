@@ -24,6 +24,7 @@
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
 #include "share/ob_sql_client_decorator.h"
+#include "share/schema/ob_ai_column_schema.h"
 
 #define COMMON_SQL              "SELECT * FROM %s"
 #define COMMON_SCHEMA_SQL         "SELECT * FROM %s WHERE 1 = 1"
@@ -731,6 +732,9 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schemas(
         ret = OB_ERR_UNEXPECTED;
       } else if (OB_FAIL(ObSchemaRetrieveUtils::cascaded_generated_column(*not_core_schemas.at(i)))) {
       }
+    }
+    if (OB_SUCC(ret) && !GCTX.in_bootstrap_
+        && OB_FAIL(AIColumnSqlService::attach_to_user_tables(sql_client, not_core_schemas))) {
     }
     if (FAILEDx(sort_tables_partition_info(not_core_schemas))) {
     }
@@ -4097,6 +4101,12 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
       && OB_FAIL(fetch_trigger_list(schema_status, table_id, schema_version,
                                     sql_client, *table_schema))) {
+  }
+  if (OB_SUCC(ret) && !is_schema_fetch_dependency && !GCTX.in_bootstrap_) {
+    ObSEArray<ObTableSchema *, 1> tables;
+    if (OB_FAIL(tables.push_back(table_schema))) {
+    } else if (OB_FAIL(AIColumnSqlService::attach_to_user_tables(sql_client, tables))) {
+    }
   }
   return ret;
 }
