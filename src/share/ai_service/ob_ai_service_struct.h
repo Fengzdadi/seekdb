@@ -49,6 +49,7 @@ public:
     request_transform_fn_.reset();
     response_transform_fn_.reset();
     endpoint_id_ = OB_INVALID_ID;
+    max_concurrency_ = 0;
   }
 
   int parse_from_json_base(common::ObArenaAllocator &allocator,const ObString &name, const common::ObIJsonBase &params_jbase);
@@ -69,6 +70,10 @@ public:
   const ObString &get_response_transform_fn() const { return response_transform_fn_; }
   uint64_t get_endpoint_id() const { return endpoint_id_; }
   void set_endpoint_id(uint64_t endpoint_id) { endpoint_id_ = endpoint_id; }
+  // 0 means no limit was configured for this endpoint
+  int64_t get_max_concurrency() const { return max_concurrency_; }
+  bool has_max_concurrency() const { return max_concurrency_ > 0; }
+  static bool is_ollama_provider(const ObString &provider);
 
   TO_STRING_KV(K_(name),
                K_(scope),
@@ -80,12 +85,17 @@ public:
                K_(request_model_name),
                K_(parameters),
                K_(request_transform_fn),
-               K_(response_transform_fn));
+               K_(response_transform_fn),
+               K_(max_concurrency));
+public:
+  static const int64_t MIN_MAX_CONCURRENCY = 1;
+  static const int64_t MAX_MAX_CONCURRENCY = 1024;
 private:
   static const ObString DEFAULT_SCOPE;
   static bool is_valid_provider(const ObString &provider);
   int encrypt_access_key_(common::ObIAllocator &allocator, const ObString &access_key, ObString &encrypted_access_key);
   int decrypt_access_key_(common::ObIAllocator &allocator, const ObString &encrypted_access_key, ObString &unencrypted_access_key) const;
+  static int parse_max_concurrency_(const common::ObIJsonBase &value, int64_t &max_concurrency);
 private:
   uint64_t endpoint_id_;
   ObString name_;
@@ -98,6 +108,7 @@ private:
   ObString parameters_;
   ObString request_transform_fn_;
   ObString response_transform_fn_;
+  int64_t max_concurrency_;
 };
 
 } // namespace share

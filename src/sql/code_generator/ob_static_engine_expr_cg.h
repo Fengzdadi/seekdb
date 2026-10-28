@@ -187,6 +187,9 @@ private:
   // init parent_cnt_, parents_
   int cg_expr_parents(const common::ObIArray<ObRawExpr *> &raw_exprs);
 
+  // let the parents of batch-at-once exprs (e.g. ai_embed) evaluate their args in batch
+  int cg_batch_eval_args(const common::ObIArray<ObRawExpr *> &raw_exprs);
+
   // init eval_func_, inner_eval_func_, expr_ctx_id_, extra_
   int cg_expr_by_operator(const common::ObIArray<ObRawExpr *> &raw_exprs,
                           int64_t &total_ctx_cnt);

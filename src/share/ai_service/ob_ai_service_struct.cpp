@@ -37,8 +37,11 @@ const char *VALID_PROVIDERS[] = {
   "SILICONFLOW",
   "COHERE",
   "HUNYUAN-OPENAI",
-  "OPENAI"
+  "OPENAI",
+  "OLLAMA"
 };
+
+static const char *OLLAMA_PROVIDER = "OLLAMA";
 
 #define EXTRACT_JSON_ELEM_STR(json_key, member) \
   EXTRACT_JSON_ELEM_STR_WITH_PROCESS(json_key, member, "void")
@@ -90,6 +93,8 @@ int ObAiModelEndpointInfo::deep_copy(
   } else if (OB_FAIL(ob_write_string(allocator, other.parameters_, parameters_))) {
   } else if (OB_FAIL(ob_write_string(allocator, other.request_transform_fn_, request_transform_fn_))) {
   } else if (OB_FAIL(ob_write_string(allocator, other.response_transform_fn_, response_transform_fn_))) {
+  } else {
+    max_concurrency_ = other.max_concurrency_;
   }
   return ret;
 }
@@ -112,7 +117,8 @@ int ObAiModelEndpointInfo::check_valid() const
   } else if (url_.empty()) {
     ret = OB_AI_FUNC_PARAM_EMPTY;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_EMPTY, strlen("url"), "url");
-  } else if (access_key_.empty()) {
+  } else if (access_key_.empty() && !is_ollama_provider(provider_)) {
+    // a local ollama service usually runs without authentication
     ret = OB_AI_FUNC_PARAM_EMPTY;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_EMPTY, strlen("access_key"), "access_key");
     LOG_WARN("access_key is empty", K(ret), K(*this));
@@ -131,6 +137,40 @@ int ObAiModelEndpointInfo::check_valid() const
   } else if (!response_transform_fn_.empty()) {
     ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("response_transform_fn"), "response_transform_fn");
+  } else if (0 != max_concurrency_
+             && (max_concurrency_ < MIN_MAX_CONCURRENCY || max_concurrency_ > MAX_MAX_CONCURRENCY)) {
+    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+    LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("max_concurrency"), "max_concurrency");
+  }
+  return ret;
+}
+
+bool ObAiModelEndpointInfo::is_ollama_provider(const ObString &provider)
+{
+  return 0 == provider.case_compare(OLLAMA_PROVIDER);
+}
+
+int ObAiModelEndpointInfo::parse_max_concurrency_(const ObIJsonBase &value, int64_t &max_concurrency)
+{
+  int ret = OB_SUCCESS;
+  int64_t int_value = 0;
+  // only a json integer is accepted, "8" / 8.0 / true / null are rejected
+  if (ObJsonNodeType::J_INT == value.json_type()) {
+    int_value = value.get_int();
+  } else if (ObJsonNodeType::J_UINT == value.json_type()) {
+    int_value = value.get_uint() > static_cast<uint64_t>(MAX_MAX_CONCURRENCY)
+                ? MAX_MAX_CONCURRENCY + 1 : static_cast<int64_t>(value.get_uint());
+  } else {
+    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+  }
+  if (OB_SUCC(ret) && (int_value < MIN_MAX_CONCURRENCY || int_value > MAX_MAX_CONCURRENCY)) {
+    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+  }
+  if (OB_FAIL(ret)) {
+    LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("max_concurrency"), "max_concurrency");
+    LOG_WARN("invalid max_concurrency", K(ret), K(value.json_type()), K(int_value));
+  } else {
+    max_concurrency = int_value;
   }
   return ret;
 }
@@ -165,6 +205,10 @@ int ObAiModelEndpointInfo::merge_delta_endpoint(common::ObArenaAllocator &alloca
       EXTRACT_JSON_ELEM_STR("parameters", parameters_)
       EXTRACT_JSON_ELEM_STR("request_transform_fn", request_transform_fn_)
       EXTRACT_JSON_ELEM_STR("response_transform_fn", response_transform_fn_)
+      if (elem.first.case_compare("max_concurrency") == 0) {
+        if (OB_FAIL(parse_max_concurrency_(*elem.second, max_concurrency_))) {
+        }
+      } else
       EXTRACT_JSON_ELEM_END()
     }
     iter.next();

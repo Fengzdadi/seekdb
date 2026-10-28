@@ -58,6 +58,8 @@ int ObExprAIComplete::calc_result_typeN(ObExprResType &type,
     if (ob_is_string_type(types_stack[PROMPT_IDX].get_type())) {
       types_stack[PROMPT_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
     } else if (ob_is_json(types_stack[PROMPT_IDX].get_type())) {
+    } else if (ob_is_null(types_stack[PROMPT_IDX].get_type())) {
+      // NULL prompt gives NULL result
     } else {
       ret = OB_ERR_INVALID_TYPE_FOR_OP;
     }
@@ -82,6 +84,71 @@ int ObExprAIComplete::calc_result_typeN(ObExprResType &type,
   return ret;
 }
 
+int ObExprAIComplete::get_prompt(const ObExpr &expr,
+                                 ObEvalCtx &ctx,
+                                 MultimodeAlloctor &allocator,
+                                 ObDatum &prompt_datum,
+                                 ObString &prompt)
+{
+  INIT_SUCC(ret);
+  ObExpr *arg_expr_prompt = expr.args_[PROMPT_IDX];
+  if (OB_ISNULL(arg_expr_prompt)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (ob_is_json(arg_expr_prompt->datum_meta_.type_)) {
+    // a prompt object built by ai_prompt, its json/nested prompt args are rendered here
+    ObIJsonBase *j_base = nullptr;
+    bool is_null = false;
+    if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, allocator, PROMPT_IDX, j_base, is_null))) {
+      LOG_WARN("failed to get prompt json", K(ret));
+    } else if (is_null || OB_ISNULL(j_base)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "prompt is not valid");
+    } else if (OB_FAIL(ObAIFuncPromptObjectUtils::render_prompt(allocator, j_base, prompt))) {
+      LOG_WARN("failed to render prompt", K(ret));
+    }
+  } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, allocator, prompt_datum,
+                                                               arg_expr_prompt->datum_meta_,
+                                                               arg_expr_prompt->obj_meta_.has_lob_header(),
+                                                               prompt))) {
+    LOG_WARN("failed to read prompt", K(ret));
+  }
+  return ret;
+}
+
+int ObExprAIComplete::get_config(const ObExpr &expr,
+                                 ObEvalCtx &ctx,
+                                 MultimodeAlloctor &allocator,
+                                 ObJsonObject *&config)
+{
+  INIT_SUCC(ret);
+  ObIJsonBase *j_base = nullptr;
+  ObIJsonBase *j_tree = nullptr;
+  bool is_null = false;
+  config = nullptr;
+  if (expr.arg_cnt_ <= CONFIG_IDX) {
+    // no config
+  } else if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, allocator, CONFIG_IDX, j_base, is_null))) {
+    LOG_WARN("failed to parse config", K(ret));
+  } else if (is_null) {
+    // NULL config means the default config
+  } else if (OB_ISNULL(j_base) || j_base->json_type() != ObJsonNodeType::J_OBJECT) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, config must be a json object");
+  } else if (j_base->is_tree()) {
+    config = static_cast<ObJsonObject *>(j_base);
+  } else if (OB_FAIL(ObJsonBaseFactory::transform(&allocator, j_base, ObJsonInType::JSON_TREE, j_tree))) {
+    LOG_WARN("failed to transform config to tree", K(ret));
+  } else {
+    config = static_cast<ObJsonObject *>(j_tree);
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ObAIFuncUtils::check_completion_config(config))) {
+    LOG_WARN("invalid completion config", K(ret));
+  }
+  return ret;
+}
+
 int ObExprAIComplete::eval_ai_complete(const ObExpr &expr, 
                                        ObEvalCtx &ctx,
                                        ObDatum &res) 
@@ -92,8 +159,7 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
   ObDatum *arg_config = nullptr;
   if (OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_prompt, arg_config))) {
   } else if (arg_model_id->is_null() || arg_prompt->is_null()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, parameters is null");
+    // NULL in, NULL out, so that NULL rows do not fail the whole query
     res.set_null();
   } else {
     ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
@@ -104,42 +170,12 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
     ObString model_id = arg_model_id->get_string();
     ObString prompt;
     ObJsonObject *config = nullptr;
-    ObString config_str;
     share::ObAiModelEndpointInfo resolved_endpoint;
     const share::ObAiModelEndpointInfo *endpoint_info = &resolved_endpoint;
     query::ObIAiEndpointResolver *endpoint_resolver =
         ::oceanbase::share::server_service<::oceanbase::query::ObIAiEndpointResolver>();
-    ObExpr *arg_expr_prompt = expr.args_[1];
-    if ( OB_ISNULL(arg_expr_prompt) ) {
-      ret = OB_ERR_UNEXPECTED;
-    } else if (arg_expr_prompt->datum_meta_.type_ == ObJsonType) {
-      ObIJsonBase *j_base = nullptr;
-      ObJsonObject *prompt_object = nullptr;
-      bool is_null = false;
-      if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, temp_allocator, PROMPT_IDX, j_base, is_null))) {
-      } else if (j_base->json_type() != ObJsonNodeType::J_OBJECT) {
-        ret = OB_INVALID_ARGUMENT;
-      } else if (OB_FALSE_IT(prompt_object = static_cast<ObJsonObject *>(j_base))) {
-      } else if (!ObAIFuncPromptObjectUtils::is_valid_prompt_object(prompt_object)) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "prompt is not valid");
-        res.set_null();
-      } else if (!ObAIFuncJsonUtils::ob_is_json_array_all_str(static_cast<ObJsonArray *>(prompt_object->get_value(ObAIFuncPromptObjectUtils::prompt_args_key)))) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "prompt object is not support");
-      } else if (OB_FAIL(ObAIFuncPromptObjectUtils::replace_all_str_args_in_template(temp_allocator, prompt_object, prompt))) {
-      }
-    } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_prompt, expr.args_[1]->datum_meta_, expr.args_[1]->obj_meta_.has_lob_header(), prompt))) {
-    }
-
-    if (OB_FAIL(ret)) {
-    } else if (OB_NOT_NULL(arg_config)) {
-      if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_config, expr.args_[2]->datum_meta_, expr.args_[2]->obj_meta_.has_lob_header(), config_str))) {
-      } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object_form_str(temp_allocator, config_str, config))) {
-      }
-    }
-
-    if (OB_FAIL(ret)) {
+    if (OB_FAIL(get_prompt(expr, ctx, temp_allocator, *arg_prompt, prompt))) {
+    } else if (OB_FAIL(get_config(expr, ctx, temp_allocator, config))) {
     } else if (model_id.empty() || prompt.empty()) {
       ret = OB_INVALID_ARGUMENT;
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_complete, model id or input is empty");

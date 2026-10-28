@@ -1809,7 +1809,7 @@ id	field	type	length	precision	nullable
 21	name	22	128	-1	1
 22	type	5	0	20	1
 23	model_name	22	128	-1	1
-table oceanbase.__all_ai_model_endpoint column_count 14 table_id 1130
+table oceanbase.__all_ai_model_endpoint column_count 15 table_id 1130
 select column_id id, column_name field, data_type type, data_length length, data_precision `precision`, nullable from __all_column where table_id=1130 order by column_id;
 id	field	type	length	precision	nullable
 16	gmt_create	18	0	25	1
@@ -1826,6 +1826,7 @@ id	field	type	length	precision	nullable
 27	parameters	22	2048	-1	1
 28	request_transform_fn	22	64	-1	1
 29	response_transform_fn	22	64	-1	1
+30	max_concurrency	5	0	20	1
 table oceanbase.__all_objauth_mysql column_count 8 table_id 1133
 select column_id id, column_name field, data_type type, data_length length, data_precision `precision`, nullable from __all_column where table_id=1133 order by column_id;
 id	field	type	length	precision	nullable

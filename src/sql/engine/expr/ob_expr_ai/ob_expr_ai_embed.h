@@ -37,11 +37,20 @@ public:
                                 int64_t param_num,
                                 common::ObExprTypeCtx &type_ctx) const override;
   static int eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res);
+  // rows of a batch are embedded together, several rows per http request
+  static int eval_ai_embed_batch(const ObExpr &expr, ObEvalCtx &ctx,
+                                 const ObBitVector &skip, const int64_t batch_size);
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx, 
                       const ObRawExpr &raw_expr,
                       ObExpr &rt_expr) const override;
   virtual bool need_rt_ctx() const override { return true; }
 private:
+  static int get_content(const ObExpr &expr, ObEvalCtx &ctx, common::ObIAllocator &allocator,
+                         const ObDatum &datum, common::ObString &content);
+  // embed contents with one model, results are in the order of contents
+  static int embed_contents(common::ObIAllocator &allocator, const common::ObString &model_id,
+                            const ObDatum *dim_datum, common::ObArray<common::ObString> &contents,
+                            common::ObArray<common::ObString> &results);
   static constexpr int MODEL_IDX = 0;
   static constexpr int CONTENT_IDX = 1;
   static constexpr int DIM_IDX = 2;
