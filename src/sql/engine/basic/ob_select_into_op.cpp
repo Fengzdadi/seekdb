@@ -53,14 +53,19 @@ int ObSelectIntoOp::inner_open()
     if (OB_FAIL(session->get_sql_select_limit(top_limit_cnt_))) {
     }
   }
-  if (OB_SUCC(ret) && !MY_SPEC.external_properties_.str_.empty()) {
+  if (OB_SUCC(ret) && CsvExportOptions::is_copy_properties(MY_SPEC.external_properties_.str_)) {
+    is_copy_ = true;
+    if (OB_FAIL(open_copy())) {
+      LOG_WARN("failed to open copy target", K(ret));
+    }
+  } else if (OB_SUCC(ret) && !MY_SPEC.external_properties_.str_.empty()) {
     if (OB_FAIL(external_properties_.load_from_string(MY_SPEC.external_properties_.str_,
                                                       ctx_.get_allocator()))) {
     } else {
       format_type_ = external_properties_.format_type_;
     }
   }
-  if (OB_SUCC(ret)) {
+  if (OB_SUCC(ret) && !is_copy_) {
     switch (format_type_)
     {
       case ObExternalFileFormat::FormatType::CSV_FORMAT:
@@ -188,6 +193,9 @@ int ObSelectIntoOp::calc_outfile_path()
 }
 int ObSelectIntoOp::inner_get_next_row()
 {
+  if (is_copy_) {
+    return copy_get_next_row();
+  }
   int ret = 0 == top_limit_cnt_ ? OB_ITER_END : OB_SUCCESS;
   int64_t row_count = 0;
   const ObItemType into_type = MY_SPEC.into_type_;
@@ -236,6 +244,9 @@ int ObSelectIntoOp::inner_get_next_row()
 
 int ObSelectIntoOp::inner_get_next_batch(const int64_t max_row_cnt)
 {
+  if (is_copy_) {
+    return copy_get_next_batch(max_row_cnt);
+  }
   int ret = OB_SUCCESS;
   const ObBatchRows *child_brs = NULL;
   int64_t batch_size = min(max_row_cnt, MY_SPEC.max_batch_size_);
@@ -326,6 +337,236 @@ int ObSelectIntoOp::inner_close()
 {
   int ret = OB_SUCCESS;
   if (OB_NOT_NULL(data_writer_) && OB_FAIL(data_writer_->close_data_writer())) {
+  }
+  if (OB_NOT_NULL(copy_exporter_)) {
+    // removes the temporary file unless the copy has finished
+    copy_exporter_->abort();
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::open_copy()
+{
+  int ret = OB_SUCCESS;
+  ObSQLSessionInfo *session = ctx_.get_my_session();
+  ObPhysicalPlanCtx *phy_plan_ctx = ctx_.get_physical_plan_ctx();
+  CsvExportOptions options;
+  ObString secure_file_priv;
+  ObString real_path;
+  bool need_check = false;
+  void *buf = NULL;
+  if (OB_ISNULL(session) || OB_ISNULL(phy_plan_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(FileSqlUtil::check_enabled(*session))) {
+  } else if (OB_FAIL(options.decode(MY_SPEC.external_properties_.str_))) {
+    LOG_WARN("failed to decode copy options", K(ret));
+  } else if (FALSE_IT(file_name_ = MY_SPEC.outfile_name_)) {
+  } else if (OB_FAIL(ObSQLUtils::get_param_value(MY_SPEC.outfile_name_,
+                                                 phy_plan_ctx->get_param_store(),
+                                                 file_name_,
+                                                 need_check))) {
+  } else if (OB_FAIL(FileSqlUtil::get_secure_file_priv(ctx_.get_allocator(), secure_file_priv))) {
+  } else if (OB_FAIL(FileSqlUtil::resolve_output_path(file_name_.get_varchar(), secure_file_priv,
+                                                      ctx_.get_allocator(), real_path))) {
+  } else if (OB_ISNULL(buf = ctx_.get_allocator().alloc(sizeof(CsvFileExporter)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (FALSE_IT(copy_exporter_ = new (buf) CsvFileExporter())) {
+  } else if (OB_FAIL(copy_exporter_->open(real_path, options))) {
+  } else if (OB_FAIL(copy_exporter_->write_header())) {
+  } else {
+    print_params_.tz_info_ = session->get_timezone_info();
+    print_params_.use_memcpy_ = true;
+    print_params_.cs_type_ = CS_TYPE_UTF8MB4_BIN;
+  }
+  return ret;
+}
+
+// The text COPY writes for a non string value. Temporal values keep the fraction digits of
+// their type (print_plain_str_literal always prints six), so the file reads back the same.
+static int print_copy_value(const ObObj &obj, const ObScale scale, const ObObjPrintParams &params,
+                            char *buf, const int64_t buf_len, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  const int16_t digits = scale >= 0 && scale <= OB_MAX_DATETIME_PRECISION
+                         ? scale : OB_MAX_DATETIME_PRECISION;
+  switch (obj.get_type_class()) {
+    case ObDateTimeTC:
+      ret = ObTimeConverter::datetime_to_str(obj.get_datetime(),
+                                             ObTimestampType == obj.get_type() ? params.tz_info_ : NULL,
+                                             digits, buf, buf_len, pos);
+      break;
+    case ObMySQLDateTimeTC:
+      ret = ObTimeConverter::mdatetime_to_str(obj.get_mysql_datetime(), NULL, digits, buf, buf_len,
+                                              pos);
+      break;
+    case ObTimeTC:
+      ret = ObTimeConverter::time_to_str(obj.get_time(), digits, buf, buf_len, pos);
+      break;
+    default:
+      ret = obj.print_plain_str_literal(buf, buf_len, pos, params);
+      break;
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::copy_write_field(const ObExpr &expr, const ObDatum &datum, const bool is_first)
+{
+  int ret = OB_SUCCESS;
+  const ObObjType type = expr.datum_meta_.type_;
+  ObString str;
+  if (datum.is_null()) {
+    ret = copy_exporter_->write_field(NULL, 0, true, is_first);
+  } else if (ob_is_text_tc(type)) {
+    ObObj obj;
+    if (OB_FAIL(datum.to_obj(obj, expr.obj_meta_, expr.obj_datum_map_))) {
+      LOG_WARN("failed to convert datum", K(ret));
+    } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx_, &copy_alloc_, obj, str))) {
+      LOG_WARN("failed to read lob data", K(ret));
+    } else {
+      ret = copy_exporter_->write_field(str.ptr(), str.length(), false, is_first);
+    }
+  } else if (ob_is_string_tc(type)) {
+    str = datum.get_string();
+    ret = copy_exporter_->write_field(str.ptr(), str.length(), false, is_first);
+  } else {
+    ObObj obj;
+    int64_t pos = 0;
+    if (OB_FAIL(datum.to_obj(obj, expr.obj_meta_, expr.obj_datum_map_))) {
+      LOG_WARN("failed to convert datum", K(ret));
+    }
+    while (OB_SUCC(ret)) {
+      pos = 0;
+      if (copy_buf_len_ > 0
+          && OB_SUCC(print_copy_value(obj, expr.datum_meta_.scale_, print_params_, copy_buf_,
+                                      copy_buf_len_, pos))) {
+        break;
+      } else if (copy_buf_len_ > 0 && OB_SIZE_OVERFLOW != ret) {
+        LOG_WARN("failed to print value", K(ret));
+      } else if (copy_buf_len_ >= OB_MAX_PACKET_LENGTH) {
+        ret = OB_SIZE_OVERFLOW;
+        LOG_WARN("value is too long", K(ret));
+      } else {
+        const int64_t new_len = std::max<int64_t>(copy_buf_len_ * 2, 4096);
+        char *new_buf = static_cast<char *>(ctx_.get_allocator().alloc(new_len));
+        if (OB_ISNULL(new_buf)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          ret = OB_SUCCESS;
+          copy_buf_ = new_buf;
+          copy_buf_len_ = new_len;
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ret = copy_exporter_->write_field(copy_buf_, pos, false, is_first);
+    }
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::copy_finish(const int64_t row_count)
+{
+  int ret = OB_SUCCESS;
+  ObPhysicalPlanCtx *phy_plan_ctx = ctx_.get_physical_plan_ctx();
+  if (OB_ISNULL(phy_plan_ctx) || OB_ISNULL(copy_exporter_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(copy_exporter_->finish())) {
+    LOG_WARN("failed to publish copy target", K(ret));
+  } else {
+    phy_plan_ctx->set_affected_rows(row_count);
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::copy_get_next_row()
+{
+  int ret = OB_SUCCESS;
+  const ObIArray<ObExpr*> &select_exprs = MY_SPEC.select_exprs_;
+  int64_t row_count = 0;
+  ObDatum *datum = NULL;
+  if (OB_ISNULL(copy_exporter_)) {
+    ret = OB_NOT_INIT;
+  } else if (copy_exporter_->is_finished()) {
+    ret = OB_ITER_END;
+  }
+  while (OB_SUCC(ret)) {
+    clear_evaluated_flag();
+    copy_alloc_.reuse();
+    if (OB_FAIL(child_->get_next_row())) {
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
+        if (OB_FAIL(select_exprs.at(i)->eval(eval_ctx_, datum))) {
+        } else if (OB_FAIL(copy_write_field(*select_exprs.at(i), *datum, 0 == i))) {
+        }
+      }
+      if (OB_SUCC(ret) && OB_SUCC(copy_exporter_->end_row())) {
+        ++row_count;
+      }
+    }
+  }
+  if (OB_ITER_END == ret && !copy_exporter_->is_finished()) {
+    if (OB_FAIL(copy_finish(row_count))) {
+    } else {
+      ret = OB_ITER_END;
+    }
+  }
+  if (OB_FAIL(ret) && OB_ITER_END != ret) {
+    need_commit_ = false;
+    copy_exporter_->abort();
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::copy_get_next_batch(const int64_t max_row_cnt)
+{
+  int ret = OB_SUCCESS;
+  const ObIArray<ObExpr*> &select_exprs = MY_SPEC.select_exprs_;
+  const int64_t batch_size = min(max_row_cnt, MY_SPEC.max_batch_size_);
+  const ObBatchRows *child_brs = NULL;
+  int64_t row_count = 0;
+  bool is_iter_end = false;
+  ObSEArray<ObDatumVector, 16> datum_vectors;
+  if (OB_ISNULL(copy_exporter_)) {
+    ret = OB_NOT_INIT;
+  } else if (copy_exporter_->is_finished()) {
+    is_iter_end = true;
+  }
+  while (OB_SUCC(ret) && !is_iter_end) {
+    clear_evaluated_flag();
+    datum_vectors.reuse();
+    if (OB_FAIL(child_->get_next_batch(batch_size, child_brs))) {
+    } else {
+      is_iter_end = child_brs->end_;
+      for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
+        if (OB_FAIL(select_exprs.at(i)->eval_batch(eval_ctx_, *child_brs->skip_, child_brs->size_))) {
+        } else if (OB_FAIL(datum_vectors.push_back(
+                       select_exprs.at(i)->locate_expr_datumvector(eval_ctx_)))) {
+        }
+      }
+      for (int64_t row = 0; OB_SUCC(ret) && row < child_brs->size_; ++row) {
+        if (child_brs->skip_->contain(row)) {
+          continue;
+        }
+        copy_alloc_.reuse();
+        for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
+          ret = copy_write_field(*select_exprs.at(i), *datum_vectors.at(i).at(row), 0 == i);
+        }
+        if (OB_SUCC(ret) && OB_SUCC(copy_exporter_->end_row())) {
+          ++row_count;
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret) && !copy_exporter_->is_finished() && OB_FAIL(copy_finish(row_count))) {
+  }
+  if (OB_SUCC(ret)) {
+    brs_.size_ = 0;
+    brs_.end_ = true;
+  } else {
+    need_commit_ = false;
+    if (OB_NOT_NULL(copy_exporter_)) {
+      copy_exporter_->abort();
+    }
   }
   return ret;
 }
@@ -1278,6 +1519,11 @@ void ObSelectIntoOp::destroy()
   if (OB_NOT_NULL(data_writer_)) {
     data_writer_->~ObExternalFileWriter();
   }
+  if (OB_NOT_NULL(copy_exporter_)) {
+    copy_exporter_->~CsvFileExporter();
+    copy_exporter_ = NULL;
+  }
+  copy_alloc_.reset();
   external_properties_.~ObExternalFileFormat();
   ObOperator::destroy();
 }

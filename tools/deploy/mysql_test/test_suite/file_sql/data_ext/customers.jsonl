@@ -1,0 +1,5 @@
+{"customer_id":1,"name":"Alice","city":"Hangzhou","vip":true}
+{"customer_id":2,"name":"Bob","city":"Beijing","vip":false}
+{"customer_id":3,"name":"Chen","city":"Shanghai"}
+
+{"customer_id":5,"name":"Dana","city":"Hangzhou","vip":true}

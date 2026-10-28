@@ -340,6 +340,13 @@ int get_dml_stmt_need_privs(
           const TableItem *table_item = dml_stmt->get_table_item(i);
           if (OB_ISNULL(table_item)) {
             ret = OB_ERR_UNEXPECTED;
+          } else if (table_item->is_file_table()) {
+            // reading server files needs FILE, like LOAD DATA INFILE
+            ObNeedPriv file_priv;
+            file_priv.priv_set_ = OB_PRIV_FILE;
+            file_priv.priv_level_ = OB_PRIV_USER_LEVEL;
+            if (OB_FAIL(need_privs.push_back(file_priv))) {
+            }
           } else if (TableItem::BASE_TABLE == table_item->type_
             || TableItem::ALIAS_TABLE == table_item->type_
             || table_item->is_view_table_) {

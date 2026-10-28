@@ -1,0 +1,101 @@
+# CRLF records, UTF-8 BOM, quoted CRLF, doubled quotes, empty and quoted empty fields
+k	txt	txt_null	n
+1	line1<CR><LF>line2	0	10
+2	a "quoted" word	0	NULL
+3	NULL	1	30
+4		0	40
+column_name	column_type	null	key	default	extra
+k	BIGINT	NO	NULL	NULL	NULL
+txt	VARCHAR	YES	NULL	NULL	NULL
+n	BIGINT	YES	NULL	NULL	NULL
+# UTF-8 header names, names with spaces and multi-byte values
+编号	名字	first name	备注	chars
+1	张三	Zhang	多行<LF>备注	2
+2	李四	Li	NULL	2
+3	王五	Wang, Jr.	ok	2
+column_name	column_type	null	key	default	extra
+编号	BIGINT	NO	NULL	NULL	NULL
+名字	VARCHAR	NO	NULL	NULL	NULL
+first name	VARCHAR	NO	NULL	NULL	NULL
+备注	VARCHAR	YES	NULL	NULL	NULL
+# header = false, delimiter, quote, escape and NULL string options
+column0	column1	column2
+1	semi;colon	NULL
+2	it's	2026-08-09
+3	NULL	2026-08-10
+column_name	column_type	null	key	default	extra
+column0	BIGINT	NO	NULL	NULL	NULL
+column1	VARCHAR	YES	NULL	NULL	NULL
+column2	DATE	YES	NULL	NULL	NULL
+cnt
+2
+# without a delimiter option, files without a comma in the first record are sniffed
+a	b	c
+1	x,y	2026-08-01
+2	z	NULL
+id	name
+1	a
+2	b c
+count(*)
+2
+# tab separated files default to a tab delimiter
+a	b	b_null
+1	x y	0
+2	NULL	1
+a	b
+1	x y
+2	NULL
+column_name	column_type	null	key	default	extra
+a	VARCHAR	NO	NULL	NULL	NULL
+b	VARCHAR	YES	NULL	NULL	NULL
+# duplicate and empty header names are made unique
+column_name	column_type	null	key	default	extra
+x	BIGINT	NO	NULL	NULL	NULL
+x__2	BIGINT	NO	NULL	NULL	NULL
+column2	BIGINT	NO	NULL	NULL	NULL
+X__3	BIGINT	NO	NULL	NULL	NULL
+x	x__2	column2	X__3
+1	2	3	4
+# a header without rows has all NULL columns; an empty file reads as one VARCHAR column
+column_name	column_type	null	key	default	extra
+a	NULL	YES	NULL	NULL	NULL
+b	NULL	YES	NULL	NULL	NULL
+c	NULL	YES	NULL	NULL	NULL
+count(*)
+0
+column_name	column_type	null	key	default	extra
+column0	VARCHAR	YES	NULL	NULL	NULL
+count(*)
+0
+# bad rows report the line where the record starts
+ERROR 21S01: read_csv: bad row at line 5 of 'EXT_DIR/bad_rows.csv': expected 2 fields but found 3
+id	v
+1	a
+2	multi<LF>line
+4	d
+ERROR 21S01: read_csv: unterminated quoted field in record starting at line 2
+ERROR HY000: read_csv: invalid utf8mb4 character string at line 3, column 2 of 'EXT_DIR/bad_utf8.csv'
+id	v
+1	ok
+ERROR 42000: read_csv: record starting at line 1 exceeds max_line_size (16 bytes)
+# invalid and unsupported options
+ERROR HY000: Incorrect value for read_csv option 'delim'
+ERROR HY000: read_csv: quote and delimiter must be different
+ERROR HY000: Incorrect value for read_csv option 'header'
+ERROR 0A000: read_csv option 'encoding' other than 'utf-8' is not supported
+ERROR 0A000: read_csv option 'no_such_option' is not supported
+ERROR 0A000: read_csv option 'sample_size' other than -1 (full scan inference) is not supported
+count(*)
+6
+ERROR 0A000: file sql: extension '.jsonl' is not supported by the csv reader
+# a scan larger than one batch: COPY writes 100000 rows that read_csv streams back
+count(*)	count(val)	sum(id)	min(name)	max(name)	sum(grp)	round(sum(val), 2)
+100000	99900	5000050000	row_1	row_99999	450000	1248750000.00
+grp	cnt
+0	10000
+1	10000
+2	10000
+id	name
+50001	row_50001
+50000	row_50000
+49999	row_49999

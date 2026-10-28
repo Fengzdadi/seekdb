@@ -1666,6 +1666,11 @@ SQL_STANDALONE_SOURCES = [
     struct(path = "src/sql/engine/expr/ob_expr_array_sort.cpp", language = "c++", kind = "source"),
     struct(path = "src/sql/engine/expr/ob_expr_in.cpp", language = "c++", kind = "source"),
     struct(path = "src/sql/engine/expr/ob_expr_mul.cpp", language = "c++", kind = "source"),
+    struct(path = "src/sql/engine/basic/ob_file_scan_utils.cpp", language = "c++", kind = "source"),
+    struct(path = "src/sql/engine/basic/ob_file_parquet_reader.cpp", language = "c++", kind = "source"),
+    struct(path = "src/sql/engine/basic/ob_file_table_op.cpp", language = "c++", kind = "source"),
+    struct(path = "src/sql/optimizer/ob_log_file_table.cpp", language = "c++", kind = "source"),
+    struct(path = "src/sql/resolver/dml/ob_file_table_resolver.cpp", language = "c++", kind = "source"),
 ]
 
 SQL_EXTRA_SOURCES = [

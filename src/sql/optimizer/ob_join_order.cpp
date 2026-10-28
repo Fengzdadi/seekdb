@@ -28,6 +28,7 @@
 #include "sql/engine/expr/ob_expr_result_type_util.h"
 #include "sql/engine/px/ob_px_util.h"
 #include "sql/das/iter/ob_das_text_retrieval_eval_node.h"
+#include "sql/engine/basic/ob_file_scan_utils.h"
 using namespace oceanbase;
 using namespace sql;
 using namespace oceanbase::common;
@@ -5978,6 +5979,11 @@ bool oceanbase::sql::Path::is_values_table_path() const
   return NULL != parent_ && parent_->get_type() == VALUES_TABLE_ACCESS;
 }
 
+bool oceanbase::sql::Path::is_file_table_path() const
+{
+  return NULL != parent_ && parent_->get_type() == FILE_TABLE_ACCESS;
+}
+
 bool oceanbase::sql::Path::is_join_path() const
 {
   return NULL != parent_ && parent_->get_type() == JOIN;
@@ -8335,6 +8341,8 @@ int ObJoinOrder::init_base_join_order(const TableItem *table_item)
       set_type(JSON_TABLE_ACCESS);
     } else if (table_item->is_values_table()) {
       set_type(VALUES_TABLE_ACCESS);
+    } else if (table_item->is_file_table()) {
+      set_type(FILE_TABLE_ACCESS);
     } else if (table_item->is_lateral_table()) {
       set_type(SUBQUERY);
     } else {
@@ -8363,6 +8371,8 @@ int ObJoinOrder::generate_base_paths()
     OPT_TRACE_TITLE("end generate subplan");
   } else if (VALUES_TABLE_ACCESS == get_type()) {
     ret = generate_values_table_paths();
+  } else if (FILE_TABLE_ACCESS == get_type()) {
+    ret = generate_file_table_paths();
   } else {
     ret = OB_ERR_UNEXPECTED;
   }
@@ -15448,6 +15458,19 @@ int ObJoinOrder::copy_path(const Path& src_path, Path* &dst_path)
         dst_path = new_values_table_path;
       }
     }
+  } else if (src_path.is_file_table_path()) {
+    const FileTablePath &file_table_path = static_cast<const FileTablePath&>(src_path);
+    FileTablePath *new_file_table_path = NULL;
+    if (OB_ISNULL(new_file_table_path = reinterpret_cast<FileTablePath*>(allocator_->alloc(sizeof(FileTablePath))))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("failed to allocate an FileTablePath", K(ret));
+    } else {
+      new_file_table_path = new(new_file_table_path) FileTablePath();
+      if (OB_FAIL(new_file_table_path->assign(file_table_path, allocator_))) {
+      } else {
+        dst_path = new_file_table_path;
+      }
+    }
   } else {
     ret = OB_ERR_UNEXPECTED;
   }
@@ -16025,6 +16048,107 @@ int ObJoinOrder::generate_values_table_paths()
     } else if (OB_FAIL(values_path->compute_pipeline_info())) {
     } else if (OB_FAIL(create_plan_for_path_with_subq(values_path))) {
     } else if (OB_FAIL(add_path(values_path))) {
+    } else { /*do nothing*/ }
+  }
+  return ret;
+}
+
+int FileTablePath::assign(const FileTablePath &other, common::ObIAllocator *allocator)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(Path::assign(other, allocator))) {
+  } else {
+    table_id_ = other.table_id_;
+    table_def_ = other.table_def_;
+  }
+  return ret;
+}
+
+double FileTablePath::get_file_rows() const
+{
+  return NULL == table_def_ ? 1.0 : std::max(static_cast<double>(table_def_->row_count_), 1.0);
+}
+
+int FileTablePath::estimate_cost()
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(parent_) || OB_ISNULL(parent_->get_plan()) || OB_ISNULL(table_def_)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    ObOptimizerContext &opt_ctx = parent_->get_plan()->get_optimizer_context();
+    cost_ = ObOptEstCost::cost_values_table(get_file_rows(), filter_, opt_ctx);
+    op_cost_ = cost_;
+  }
+  return ret;
+}
+
+int FileTablePath::estimate_row_count()
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(parent_) || OB_ISNULL(parent_->get_plan()) || OB_ISNULL(table_def_)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    ObLogPlan *plan = parent_->get_plan();
+    double selectivity = 1.0;
+    if (OB_FAIL(ObOptSelectivity::calculate_selectivity(plan->get_basic_table_metas(),
+                                                        plan->get_selectivity_ctx(),
+                                                        parent_->get_restrict_infos(),
+                                                        selectivity,
+                                                        plan->get_predicate_selectivities()))) {
+    } else {
+      parent_->set_output_rows(get_file_rows() * selectivity);
+      if (OB_FAIL(ObOptSelectivity::update_table_meta_info(plan->get_basic_table_metas(),
+                                                           plan->get_update_table_metas(),
+                                                           plan->get_selectivity_ctx(),
+                                                           table_id_,
+                                                           parent_->get_output_rows(),
+                                                           parent_->get_restrict_infos(),
+                                                           plan->get_predicate_selectivities()))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int ObJoinOrder::generate_file_table_paths()
+{
+  int ret = OB_SUCCESS;
+  FileTablePath *file_path = NULL;
+  const ObDMLStmt *stmt = NULL;
+  const TableItem *table_item = NULL;
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = get_plan()->get_stmt()) || OB_ISNULL(allocator_)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(table_item = stmt->get_table_item_by_id(table_id_)) ||
+             OB_UNLIKELY(!table_item->is_file_table()) ||
+             OB_ISNULL(table_item->file_table_def_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(file_path = reinterpret_cast<FileTablePath*>(
+                       allocator_->alloc(sizeof(FileTablePath))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    file_path = new(file_path) FileTablePath();
+    file_path->table_id_ = table_id_;
+    file_path->parent_ = this;
+    file_path->table_def_ = table_item->file_table_def_;
+    // the file is read on the server that executes the query
+    file_path->strong_sharding_ = get_plan()->get_optimizer_context().get_match_all_sharding();
+    if (OB_FAIL(file_path->set_parallel_info_for_match_all())) {
+    } else if (OB_FAIL(ObOptimizerUtil::classify_subquery_exprs(get_restrict_infos(),
+                                                                file_path->subquery_exprs_,
+                                                                file_path->filter_,
+                                                                false /* with_onetime */ ))) {
+    } else if (OB_FAIL(get_plan()->get_basic_table_metas().add_file_table_meta_info(stmt,
+                       table_id_, file_path->get_file_rows()))) {
+    } else if (OB_FAIL(ObOptEstCost::estimate_width_for_table(get_plan()->get_basic_table_metas(),
+                                                              get_plan()->get_selectivity_ctx(),
+                                                              stmt->get_column_items(),
+                                                              table_id_,
+                                                              output_row_size_))) {
+    } else if (OB_FAIL(file_path->estimate_row_count())) {
+    } else if (OB_FAIL(file_path->estimate_cost())) {
+    } else if (OB_FAIL(file_path->compute_pipeline_info())) {
+    } else if (OB_FAIL(create_plan_for_path_with_subq(file_path))) {
+    } else if (OB_FAIL(add_path(file_path))) {
     } else { /*do nothing*/ }
   }
   return ret;

@@ -1,0 +1,91 @@
+# COPY is disabled together with the file readers
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO
+# COPY writes a header line by default
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	YES	NULL	NULL	NULL
+note	VARCHAR	NO	NULL	NULL	NULL
+amount	DOUBLE	YES	NULL	NULL	NULL
+day	DATE	YES	NULL	NULL	NULL
+ts	DATETIME	YES	NULL	NULL	NULL
+count(*)	sum(id)
+5	15
+# COPY a table without a header: NULL is an empty field, an empty string is quoted
+column0	column1	column2	c2_null	column3	column4	column5
+1	Alice	plain	0	10.5	2026-08-01	2026-08-01 10:11:12
+2	Bob	comma, inside	0	-3.25	NULL	2026-08-02 00:00:00
+3	Chen	say "hi"	0	NULL	2026-08-03	NULL
+4	NULL	two<LF>lines	0	0	2026-08-04	2026-08-04 23:59:59
+5	中文		0	99999999.99	2026-08-05	2026-08-05 01:02:03
+# header, delimiter, quote, escape and NULL text options, read back with the same dialect
+id	name	note	amount	day	ts
+1	Alice	plain	10.5	2026-08-01	2026-08-01 10:11:12
+2	Bob	comma, inside	-3.25	NULL	2026-08-02 00:00:00
+3	Chen	say "hi"	NULL	2026-08-03	NULL
+4	NULL	two<LF>lines	0	2026-08-04	2026-08-04 23:59:59
+5	中文		99999999.99	2026-08-05	2026-08-05 01:02:03
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	YES	NULL	NULL	NULL
+note	VARCHAR	NO	NULL	NULL	NULL
+amount	DOUBLE	YES	NULL	NULL	NULL
+day	DATE	YES	NULL	NULL	NULL
+ts	DATETIME	YES	NULL	NULL	NULL
+# the raw text of an exported file, one record per line
+line
+id,name,note
+1,Alice,plain
+2,Bob,"comma, inside"
+3,Chen,"say ""hi"""
+# COPY a query over a file table; parquet to CSV round trip
+id	flag	s	day	ts	price
+1	1	apple	1970-01-01	1970-01-01 00:00:00.000000	123.45
+2	0	banana	2024-01-01	2024-01-01 00:00:00.123456	-0.01
+3	NULL	apple	1969-12-31	NULL	0
+4	1	NULL	NULL	1969-12-31 23:59:59.000000	NULL
+5	1	cherry	2024-02-29	2024-02-29 23:59:59.999999	9999999999.99
+6	0	中文	9999-12-31	2000-02-29 00:00:00.000000	0.05
+7	NULL		0001-01-01	NULL	0.06
+8	0	banana	2019-04-14	1970-01-01 00:00:00.000001	0.07
+9	1	NULL	NULL	1970-01-01 23:59:59.999999	0.08
+10	1	apple	1970-01-02	2023-11-14 22:13:20.000000	1
+grp	cnt	total
+0	428	289716
+1	429	288855.5
+2	429	289500
+3	429	290144.5
+4	429	289284
+5	428	288428
+6	428	289072
+# an empty result writes only the header
+column_name	column_type	null	key	default	extra
+id	NULL	YES	NULL	NULL	NULL
+name	NULL	YES	NULL	NULL	NULL
+# an existing target is never replaced
+ERROR 58000: COPY: target file 'EXT_DIR/out/plain.csv' already exists
+ERROR 58000: COPY: target file 'EXT_DIR/orders.csv' already exists
+count(*)
+6
+ERROR HY000: COPY: directory of 'EXT_DIR/out/no_such_dir/x.csv' does not exist
+# a failing query leaves neither the target nor a temporary file
+ERROR 21S01: read_csv: bad row at line 5 of 'EXT_DIR/bad_rows.csv': expected 2 fields but found 3
+file
+agg.csv
+default.csv
+dialect.csv
+empty.csv
+plain.csv
+raw.csv
+types.csv
+# invalid COPY options
+ERROR 0A000: COPY option 'format' other than csv is not supported
+ERROR HY000: Incorrect value for COPY option 'delimiter'
+ERROR 0A000: COPY option 'compression' other than 'none' is not supported
+file
+agg.csv
+default.csv
+dialect.csv
+empty.csv
+plain.csv
+raw.csv
+types.csv

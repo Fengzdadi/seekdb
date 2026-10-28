@@ -801,7 +801,7 @@ int ObDelUpdResolver::set_base_table_for_updatable_view(TableItem &table_item,
             }
           } else if (new_table_item->is_fake_cte_table()) {
             ret = OB_ERR_ILLEGAL_VIEW_UPDATE;
-          } else if (new_table_item->is_values_table()) {
+          } else if (new_table_item->is_values_table() || new_table_item->is_file_table()) {
             ret = dml->is_insert_stmt() ? OB_ERR_NON_INSERTABLE_TABLE : OB_ERR_NON_UPDATABLE_TABLE;
           } else if (new_table_item->is_json_table()) {
             ret = OB_ERR_NON_INSERTABLE_TABLE;
@@ -888,7 +888,7 @@ int ObDelUpdResolver::set_base_table_for_view(TableItem &table_item, const bool 
         }
       } else if (base->cte_type_ != TableItem::NOT_CTE) {
         ret = OB_ERR_NON_UPDATABLE_TABLE;
-      } else if (base->is_values_table()) {
+      } else if (base->is_values_table() || base->is_file_table()) {
         ret = OB_ERR_NON_UPDATABLE_TABLE;
       } else if (base->is_json_table()) {
         ret = OB_ERR_NON_UPDATABLE_TABLE;

@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
+#include "sql/resolver/dml/ob_file_table_resolver.h"
 #include "share/ob_time_utility2.h"
 #include "sql/resolver/dml/ob_aggr_expr_push_up_analyzer.h"
 #include "sql/resolver/dml/ob_group_by_checker.h"
@@ -1051,6 +1052,10 @@ int ObSelectResolver::resolve(const ParseNode &parse_tree)
       }
     }
   }
+  if (OB_SUCC(ret) && NULL != select_stmt->get_select_into()
+      && OB_FAIL(FileTableResolver::finish_copy_into(*select_stmt, *allocator_))) {
+    LOG_WARN("failed to finish copy into", K(ret));
+  }
 
   return ret;
 }
@@ -1658,6 +1663,9 @@ int ObSelectResolver::expand_target_list(
     if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(get_stmt()->get_column_size() == 0)) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
+    }
+  } else if (table_item.is_file_table()) {
+    if (OB_FAIL(resolve_all_file_table_columns(table_item, column_items))) {
     }
   } else {
     ret = OB_ERR_UNEXPECTED;
@@ -3125,6 +3133,20 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
                                            into_item->user_vars_,
                                            into_item->pl_vars_,
                                            select_stmt))) {
+        }
+      } else if (T_COPY_INTO == node->type_) { // COPY ... TO 'file' (options)
+        ObString path;
+        CsvExportOptions options;
+        into_item->into_type_ = T_INTO_OUTFILE;
+        if (OB_ISNULL(session_info_)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(FileTableResolver::resolve_copy_into(*node, *session_info_,
+                                                                *allocator_, path, options))) {
+        } else if (OB_FAIL(options.encode(*allocator_, into_item->external_properties_))) {
+        } else {
+          into_item->outfile_name_.set_varchar(path);
+          into_item->outfile_name_.set_collation_type(ObCharset::get_system_collation());
+          FileTableResolver::disable_plan_cache(params_.query_ctx_);
         }
       } else {
         //do nothing

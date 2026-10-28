@@ -615,6 +615,10 @@ public:
                                  const uint64_t table_id,
                                  const OptSelectivityCtx &ctx,
                                  ObValuesTableDef *table_def);
+  // file tables have no statistics: every column is assumed to have distinct values
+  int add_file_table_meta_info(const ObDMLStmt *stmt,
+                               const uint64_t table_id,
+                               const double rows);
   int get_set_stmt_output_statistics(const ObSelectStmt &stmt,
                                      const OptTableMetas &child_table_metas,
                                      const int64_t idx,

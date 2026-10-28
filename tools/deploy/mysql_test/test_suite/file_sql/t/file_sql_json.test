@@ -1,0 +1,70 @@
+# owner: database-competition
+# owner group: SQL
+# description: read_json / read_ndjson field union, missing fields, type conflicts and errors.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+set session enable_file_sql = ON;
+
+--echo # union of the fields of all objects; missing fields and JSON null are NULL
+eval select id, kind, value, ok, at, extra, empty
+       from read_json('$FILE_SQL_EXT_DIR/events.jsonl')
+      order by id;
+eval describe select * from read_json('$FILE_SQL_EXT_DIR/events.jsonl');
+
+--echo # numeric bounds, int to double widening, date strings and conflicting types
+eval select a, b, c, d, e from read_ndjson('$FILE_SQL_EXT_DIR/json_types.jsonl') order by b;
+eval describe select * from read_ndjson('$FILE_SQL_EXT_DIR/json_types.jsonl');
+eval select count(*), sum(b), min(d), max(d), count(c) from read_json_auto('$FILE_SQL_EXT_DIR/json_types.jsonl');
+
+--echo # blank lines are skipped and the format option accepts newline delimited input
+eval select count(*) from read_json('$FILE_SQL_EXT_DIR/customers.jsonl', format = 'newline_delimited');
+eval select count(*) from read_json('$FILE_SQL_EXT_DIR/customers.jsonl', format = 'auto', records = true);
+
+--echo # nested objects and arrays are rejected with their position
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/nested.jsonl');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/nested_obj.jsonl');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/json_array.json');
+
+--echo # invalid JSON reports the line and position; ignore_errors skips the line
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 3140
+eval select * from read_json('$FILE_SQL_EXT_DIR/bad_json.jsonl');
+eval select id from read_json('$FILE_SQL_EXT_DIR/bad_json.jsonl', ignore_errors = true);
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1118
+eval select * from read_json('$FILE_SQL_EXT_DIR/events.jsonl', maximum_object_size = 32);
+
+--echo # unsupported options
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/events.jsonl', format = 'array');
+--error 1210
+eval select * from read_json('$FILE_SQL_EXT_DIR/events.jsonl', format = 'yaml');
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/events.jsonl', delim = ',');
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/events.jsonl', sample_size = 2);
+
+--echo # expressions over JSON columns
+eval select kind, count(*) as cnt, max(at) as last_at
+       from read_json('$FILE_SQL_EXT_DIR/events.jsonl') e
+      group by kind
+      order by kind;
+eval select id, if(ok, 'yes', 'no') as answer, datediff(at, '2026-07-31') as days
+       from read_json('$FILE_SQL_EXT_DIR/events.jsonl')
+      where at is not null
+      order by id;
+
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

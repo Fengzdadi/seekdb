@@ -102,6 +102,8 @@
 #include "sql/engine/expand/ob_expand_vec_op.h"
 #include "sql/optimizer/ob_log_values_table_access.h"
 #include "sql/engine/basic/ob_values_table_access_op.h"
+#include "sql/optimizer/ob_log_file_table.h"
+#include "sql/engine/basic/ob_file_table_op.h"
 
 namespace oceanbase
 {
@@ -1738,6 +1740,48 @@ int ObStaticEngineCG::generate_spec(ObLogValuesTableAccess &op,
       } else {
         spec.rows_ = table_def->row_cnt_;
       }
+    }
+  }
+  return ret;
+}
+
+int ObStaticEngineCG::generate_spec(ObLogFileTable &op,
+                                    ObFileTableSpec &spec,
+                                    const bool in_root_job)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(in_root_job);
+  const FileTableDesc *desc = op.get_file_table_def();
+  const ObIArray<ObRawExpr*> &access_exprs = op.get_access_exprs();
+  if (OB_ISNULL(desc) || OB_ISNULL(phy_plan_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("file table def is null", K(ret));
+  } else if (OB_FAIL(spec.desc_.assign(*desc, phy_plan_->get_allocator()))) {
+    LOG_WARN("failed to copy file table def", K(ret));
+  } else if (OB_FAIL(spec.column_exprs_.init(access_exprs.count()))) {
+  } else if (OB_FAIL(spec.column_idxs_.init(access_exprs.count()))) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < access_exprs.count(); ++i) {
+      ObRawExpr *raw_expr = access_exprs.at(i);
+      ObExpr *expr = NULL;
+      int64_t idx = -1;
+      if (OB_ISNULL(raw_expr) || OB_UNLIKELY(!raw_expr->is_column_ref_expr())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected access expr", K(ret), KPC(raw_expr));
+      } else if (FALSE_IT(idx = static_cast<ObColumnRefRawExpr*>(raw_expr)->get_column_id()
+                                - OB_APP_MIN_COLUMN_ID)) {
+      } else if (OB_UNLIKELY(idx < 0 || idx >= desc->get_column_count())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected file table column", K(ret), K(idx));
+      } else if (OB_FAIL(mark_expr_self_produced(raw_expr))) {
+      } else if (OB_FAIL(generate_rt_expr(*raw_expr, expr))) {
+      } else if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(spec.column_exprs_.push_back(expr))) {
+      } else if (OB_FAIL(spec.column_idxs_.push_back(idx))) {
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(mark_expr_self_produced(op.get_output_exprs()))) {
     }
   }
   return ret;
@@ -6153,6 +6197,10 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
     }
     case log_op_def::LOG_EXPAND: {
       type = PHY_EXPAND;
+      break;
+    }
+    case log_op_def::LOG_FILE_TABLE: {
+      type = PHY_FILE_TABLE;
       break;
     }
     default:

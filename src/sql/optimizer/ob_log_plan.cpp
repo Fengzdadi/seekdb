@@ -44,6 +44,7 @@
 #include "sql/rewrite/ob_transform_utils.h"
 #include "sql/optimizer/ob_explain_note.h"
 #include "sql/optimizer/ob_log_values_table_access.h"
+#include "sql/optimizer/ob_log_file_table.h"
 #include "query/vector/ob_vector_index_util.h"
 #include "sql/optimizer/ob_log_expand.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -3518,6 +3519,10 @@ int ObLogPlan::create_plan_tree_from_path(Path *path,
     } else if (path->is_values_table_path()) {
       ValuesTablePath *values_table_path = static_cast<ValuesTablePath *>(path);
       if (OB_FAIL(allocate_values_table_path(values_table_path, op))) {
+      } else { /* Do nothing */ }
+    } else if (path->is_file_table_path()) {
+      FileTablePath *file_table_path = static_cast<FileTablePath *>(path);
+      if (OB_FAIL(allocate_file_table_path(file_table_path, op))) {
       } else { /* Do nothing */ }
     } else {
       ret = OB_ERR_UNEXPECTED;
@@ -11796,6 +11801,36 @@ int ObLogPlan::allocate_values_table_path(ValuesTablePath *values_table_path,
   if (OB_FAIL(do_alloc_values_table_path(values_table_path, values_op))) {
   } else {
     out_access_path_op = values_op;
+  }
+  return ret;
+}
+
+int ObLogPlan::allocate_file_table_path(FileTablePath *file_table_path,
+                                        ObLogicalOperator *&out_access_path_op)
+{
+  int ret = OB_SUCCESS;
+  ObLogFileTable *op = NULL;
+  const TableItem *table_item = NULL;
+  if (OB_ISNULL(file_table_path) || OB_ISNULL(get_stmt()) ||
+      OB_ISNULL(table_item = get_stmt()->get_table_item_by_id(file_table_path->table_id_))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_UNLIKELY(!table_item->is_file_table()) ||
+             OB_ISNULL(file_table_path->table_def_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(op = static_cast<ObLogFileTable*>(get_log_op_factory().
+                                        allocate(*this, LOG_FILE_TABLE)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    op->set_table_id(file_table_path->table_id_);
+    op->set_table_name(table_item->get_table_name());
+    op->set_file_table_def(file_table_path->table_def_);
+    op->set_rows(file_table_path->get_file_rows(), file_table_path->get_path_output_rows());
+    if (OB_FAIL(append(op->get_filter_exprs(), file_table_path->filter_))) {
+    } else if (OB_FAIL(op->compute_property(file_table_path))) {
+    } else if (OB_FAIL(op->pick_out_startup_filters())) {
+    } else {
+      out_access_path_op = op;
+    }
   }
   return ret;
 }

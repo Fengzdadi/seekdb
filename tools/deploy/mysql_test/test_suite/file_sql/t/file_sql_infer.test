@@ -1,0 +1,43 @@
+# owner: database-competition
+# owner group: SQL
+# description: Deterministic full-file type inference: widening, bounds, dates and NULL columns.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+set session enable_file_sql = ON;
+
+--echo # inferred CSV types
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/infer.csv');
+eval select i, big, neg_edge, overflow, dbl, mixed_num, flag, flag_num
+       from read_csv('$FILE_SQL_EXT_DIR/infer.csv')
+      order by i;
+eval select i, d, bad_d, dt, dt_frac, mixed_dt, txt, all_null
+       from read_csv('$FILE_SQL_EXT_DIR/infer.csv')
+      order by i;
+
+--echo # inferred values work with typed expressions
+eval select big - 1 as big_minus_one, neg_edge + 1 as neg_plus_one, dbl * 2 as dbl2,
+            date_add(d, interval 1 day) as next_day, year(dt) as y, not flag as not_flag
+       from read_csv('$FILE_SQL_EXT_DIR/infer.csv')
+      where i = 1;
+eval select count(all_null), count(*), sum(dbl), max(mixed_dt)
+       from read_csv('$FILE_SQL_EXT_DIR/infer.csv');
+
+--echo # all_varchar disables inference
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', all_varchar = true);
+
+--echo # the same file always infers the same schema
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', sample_size = -1);
+
+--echo # DESCRIBE of a projection, an alias and a parquet file
+eval describe select order_id, amount as amt from read_csv('$FILE_SQL_EXT_DIR/orders.csv') o;
+eval describe select * from read_parquet('$FILE_SQL_EXT_DIR/plain_dict.parquet');
+
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

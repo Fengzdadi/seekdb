@@ -538,6 +538,12 @@ class ObExpandVecOp;
 REGISTER_OPERATOR(ObLogExpand, PHY_EXPAND, ObExpandVecSpec, ObExpandVecOp, NOINPUT,
                   VECTORIZED_OP);
 
+class ObLogFileTable;
+class ObFileTableSpec;
+class ObFileTableOp;
+REGISTER_OPERATOR(ObLogFileTable, PHY_FILE_TABLE, ObFileTableSpec, ObFileTableOp, NOINPUT,
+                  VECTORIZED_OP);
+
 #undef REGISTER_OPERATOR
 #undef REGISTER_OPERATOR_FULL
 #undef CHECK_IS_CHAR

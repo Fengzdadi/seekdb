@@ -1,0 +1,4 @@
+{"id":1,"kind":"click","value":1,"ok":true,"at":"2026-08-01 10:00:00"}
+{"id":2,"kind":"view","value":2.5,"extra":"x"}
+{"id":3,"kind":null,"value":"n/a","ok":false,"at":"2026-08-02 11:30:00"}
+{"id":4,"value":null,"ok":null,"at":null,"empty":null}

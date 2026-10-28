@@ -1,0 +1,93 @@
+# projection, expressions and aliases
+id	twice	third	label	y	d	size
+1001	501	83.50	#1001	2026	1	big
+1002	199.8	33.30	#1002	2026	1	mid
+1003	24	4.00	#1003	2026	2	small
+1004	600	100.00	#1004	2026	3	big
+1005	30.5	5.08	#1005	2026	3	small
+1006	160	26.67	#1006	2026	4	mid
+order_id	amount
+1001	250.5
+# WHERE with AND / OR / IN / BETWEEN / LIKE / IS NULL
+order_id
+1003
+1004
+1005
+1006
+order_id
+1005
+order_id
+1003
+# ORDER BY several keys, LIMIT and OFFSET
+order_id	customer_id	amount
+1004	4	300
+1006	3	80
+1002	2	99.9
+order_id
+1002
+1006
+# GROUP BY, HAVING and aggregates
+customer_id	cnt	total	avg_amount	first_day	top
+1	2	262.5	131.25	2026-08-01	250.5
+2	1	99.9	99.9	2026-08-01	99.9
+3	1	80	80	2026-08-04	80
+4	1	300	300	2026-08-03	300
+count(*)	count(customer_id)	count(distinct customer_id)	sum(amount)	round(avg(amount), 4)	min(amount)	max(amount)
+6	5	4	757.65	126.2750	12	300
+order_day	cnt
+2026-08-01	2
+2026-08-03	2
+# DISTINCT, window functions, CTE and derived tables
+order_day
+2026-08-01
+2026-08-02
+2026-08-03
+2026-08-04
+order_id	customer_id	rn	running
+1001	1	1	250.5
+1002	2	1	350.4
+1003	1	2	362.4
+1004	4	1	662.4
+1005	NULL	1	677.65
+1006	3	1	757.65
+count(*)	sum(amount)
+4	730.4
+d	total
+2026-08-01	350.4
+2026-08-03	315.25
+2026-08-04	80
+# the same query prepared and executed twice
+count(*)	sum(amount)
+6	757.65
+count(*)	sum(amount)
+6	757.65
+# native plans: filter, group by, sort and limit over FILE TABLE SCAN
+Query Plan
+=============================
+|ID|OPERATOR           |NAME|
+-----------------------------
+|0 |TOP-N SORT         |    |
+|1 |└─HASH GROUP BY    |    |
+|2 |  └─FILE TABLE SCAN|o   |
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([o.customer_id], [T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      sort_keys([T_FUN_SUM(o.amount), DESC]), topn(2)
+  1 - output([T_FUN_SUM(o.amount)], [o.customer_id]), filter(nil), rowset=16
+      group([o.customer_id]), agg_func([T_FUN_SUM(o.amount)])
+  2 - output([o.amount], [o.customer_id]), filter([o.amount > cast(10, DOUBLE(-1, -1))]), rowset=16
+      access([o.amount], [o.customer_id]), read_csv('EXT_DIR/orders.csv')
+Query Plan
+===========================
+|ID|OPERATOR         |NAME|
+---------------------------
+|0 |SCALAR GROUP BY  |    |
+|1 |└─FILE TABLE SCAN|o   |
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_COUNT(*)])
+  1 - output(nil), filter(nil), rowset=16
+      access(nil), read_csv('EXT_DIR/orders.csv')

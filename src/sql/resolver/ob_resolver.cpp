@@ -20,6 +20,7 @@
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "sql/resolver/cmd/ob_alter_system_resolver.h"
 #include "sql/resolver/dml/ob_insert_resolver.h"
+#include "sql/resolver/dml/ob_file_table_resolver.h"
 #include "sql/resolver/dml/ob_update_resolver.h"
 #include "sql/resolver/dml/ob_delete_resolver.h"
 #include "sql/resolver/tcl/ob_start_trans_resolver.h"
@@ -236,6 +237,10 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_SELECT: {
         REGISTER_SELECT_STMT_RESOLVER(Select);
+        break;
+      }
+      case T_FILE_SQL_DESCRIBE: {
+        ret = FileTableResolver::resolve_describe(params_, parse_tree, stmt);
         break;
       }
       case T_INSERT: {

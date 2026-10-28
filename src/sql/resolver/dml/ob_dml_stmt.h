@@ -39,6 +39,7 @@ namespace sql
 {
 class ObStmtResolver;
 class ObDMLStmt;
+struct FileTableDesc;
 class ObStmtExprVisitor;
 class ObStmtExprGetter;
 
@@ -156,6 +157,7 @@ struct TableItem
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
     sample_info_ = nullptr;
+    file_table_def_ = NULL;
   }
 
   virtual TO_STRING_KV(N_TID, table_id_,
@@ -190,6 +192,7 @@ struct TableItem
     JSON_TABLE,
     VALUES_TABLE,
     LATERAL_TABLE,
+    FILE_TABLE,       // read_csv / read_json / read_parquet / glob table function
   };
 
   /**
@@ -226,6 +229,7 @@ struct TableItem
   bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
 
   bool is_lateral_table() const { return LATERAL_TABLE == type_; }
+  bool is_file_table() const { return FILE_TABLE == type_; }
   bool is_extended_all_or_user_sys_view() const
   {
     return (is_extended_sys_view_table(ref_id_) && (table_name_.prefix_match("USER_") || table_name_.prefix_match("ALL_")));
@@ -305,6 +309,8 @@ struct TableItem
   ObValuesTableDef *values_table_def_;
   // sample scan infos
   SampleInfo *sample_info_;
+  // file table, immutable after resolve and shared by copies of the table item
+  FileTableDesc *file_table_def_;
 };
 
 struct ColumnItem

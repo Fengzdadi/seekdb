@@ -1,0 +1,113 @@
+# owner: database-competition
+# owner group: SQL
+# description: read_csv dialects, named options, NULL handling and bad row diagnostics.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+set session enable_file_sql = ON;
+
+--echo # CRLF records, UTF-8 BOM, quoted CRLF, doubled quotes, empty and quoted empty fields
+eval select k, replace(replace(txt, char(13), '<CR>'), char(10), '<LF>') as txt,
+            txt is null as txt_null, n
+       from read_csv('$FILE_SQL_EXT_DIR/crlf_bom.csv') t
+      order by k;
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/crlf_bom.csv');
+
+--echo # UTF-8 header names, names with spaces and multi-byte values
+eval select 编号, 名字, `first name`, replace(备注, char(10), '<LF>') as 备注, char_length(名字) as chars
+       from read_csv('$FILE_SQL_EXT_DIR/utf8_header.csv') t
+      order by 编号;
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/utf8_header.csv');
+
+--echo # header = false, delimiter, quote, escape and NULL string options
+eval select column0, column1, column2
+       from read_csv('$FILE_SQL_EXT_DIR/options.csv', header = false, delim = ';',
+                     quote = '''', escape = '\\\\', nullstr = 'NA')
+      order by column0;
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/options.csv', header = false,
+                                     sep = ';', quote = '''', escape = '\\\\', nullstr = 'NA');
+eval select count(*) as cnt
+       from read_csv('$FILE_SQL_EXT_DIR/options.csv', header = false, delim = ';',
+                     quote = '''', escape = '\\\\', nullstr = 'NA', skip = 1);
+
+--echo # without a delimiter option, files without a comma in the first record are sniffed
+eval select a, b, c from read_csv('$FILE_SQL_EXT_DIR/semicolon.csv') order by a;
+eval select id, name from read_csv('$FILE_SQL_EXT_DIR/pipe.csv') order by id;
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/pipe.csv', delim = ',');
+
+--echo # tab separated files default to a tab delimiter
+eval select a, b, b is null as b_null from read_csv('$FILE_SQL_EXT_DIR/tab.tsv') order by a;
+eval select a, b from read_csv('$FILE_SQL_EXT_DIR/tab.tsv', delim = '\\t', all_varchar = true)
+      order by a;
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/tab.tsv', all_varchar = true);
+
+--echo # duplicate and empty header names are made unique
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/dup_header.csv');
+eval select * from read_csv('$FILE_SQL_EXT_DIR/dup_header.csv');
+
+--echo # a header without rows has all NULL columns; an empty file reads as one VARCHAR column
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/header_only.csv', header = true);
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/header_only.csv', header = true);
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/empty.csv');
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/empty.csv');
+
+--echo # bad rows report the line where the record starts
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1136
+eval select * from read_csv('$FILE_SQL_EXT_DIR/bad_rows.csv');
+eval select id, replace(v, char(10), '<LF>') as v
+       from read_csv('$FILE_SQL_EXT_DIR/bad_rows.csv', ignore_errors = true)
+      order by id;
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1136
+eval select * from read_csv('$FILE_SQL_EXT_DIR/unterminated.csv');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1300
+eval select * from read_csv('$FILE_SQL_EXT_DIR/bad_utf8.csv');
+eval select id, v from read_csv('$FILE_SQL_EXT_DIR/bad_utf8.csv', ignore_errors = true);
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1118
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', max_line_size = 16);
+
+--echo # invalid and unsupported options
+--error 1210
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', delim = ';;');
+--error 1210
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', quote = ',');
+--error 1210
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', header = 'maybe');
+--error 1235
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', encoding = 'latin1');
+--error 1235
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', no_such_option = 1);
+--error 1235
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv', sample_size = 100);
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv', sample_size = -1,
+                                   auto_detect = true, header = true);
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval select * from read_csv('$FILE_SQL_EXT_DIR/customers.jsonl');
+
+--echo # a scan larger than one batch: COPY writes 100000 rows that read_csv streams back
+let $DIGITS = (select 0 as n union all select 1 union all select 2 union all select 3
+                union all select 4 union all select 5 union all select 6 union all select 7
+                union all select 8 union all select 9);
+eval copy (select id, concat('row_', id) as name, id % 10 as grp,
+                  if(id % 1000 = 0, null, id / 4) as val
+             from (select a.n + b.n * 10 + c.n * 100 + d.n * 1000 + e.n * 10000 + 1 as id
+                     from $DIGITS a, $DIGITS b, $DIGITS c, $DIGITS d, $DIGITS e) g)
+       to '$FILE_SQL_EXT_DIR/big.csv' (format csv, header);
+eval select count(*), count(val), sum(id), min(name), max(name), sum(grp), round(sum(val), 2)
+       from read_csv('$FILE_SQL_EXT_DIR/big.csv');
+eval select grp, count(*) as cnt from read_csv('$FILE_SQL_EXT_DIR/big.csv')
+      group by grp having count(*) > 0 order by grp limit 3;
+eval select id, name from read_csv('$FILE_SQL_EXT_DIR/big.csv')
+      where id between 49999 and 50001 order by id desc;
+
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

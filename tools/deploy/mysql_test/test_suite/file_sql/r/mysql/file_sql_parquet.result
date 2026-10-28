@@ -1,0 +1,134 @@
+# footer schema of every supported type (3 row groups, v1 pages, SNAPPY)
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+flag	BOOLEAN	YES	NULL	NULL	NULL
+small	BIGINT	YES	NULL	NULL	NULL
+u32	BIGINT	YES	NULL	NULL	NULL
+f	DOUBLE	YES	NULL	NULL	NULL
+d	DOUBLE	YES	NULL	NULL	NULL
+s	VARCHAR	YES	NULL	NULL	NULL
+day	DATE	YES	NULL	NULL	NULL
+ts	DATETIME	YES	NULL	NULL	NULL
+ts_ms	DATETIME	YES	NULL	NULL	NULL
+price	DOUBLE	YES	NULL	NULL	NULL
+fdec	DOUBLE	YES	NULL	NULL	NULL
+i96	DATETIME	YES	NULL	NULL	NULL
+bin	VARCHAR	YES	NULL	NULL	NULL
+id	flag	small	u32	f	d	s	day
+1	1	-32768	4294967295	1.5	0.1	apple	1970-01-01
+2	0	0	0	-2.25	NULL	banana	2024-01-01
+3	NULL	32767	1	0	-1e300	apple	1969-12-31
+4	1	NULL	2147483647	NULL	2.5	NULL	NULL
+5	1	5	2147483648	3.75	3.14159	cherry	2024-02-29
+6	0	-5	NULL	10000000000	NULL	中文	9999-12-31
+7	NULL	7	3	-0.5	0		0001-01-01
+8	0	NULL	4	8	-7.125	banana	2019-04-14
+9	1	100	5	NULL	0.00001	NULL	NULL
+10	1	-100	6	2.5	42	apple	1970-01-02
+id	ts	ts_ms	price	fdec	i96	bin
+1	1970-01-01 00:00:00.000000	1970-01-01 00:00:00.000	123.45	-1.234	2024-01-01 01:02:03.000000	raw
+2	2024-01-01 00:00:00.123456	2024-01-01 00:00:00.123	-0.01	1.234	NULL	NULL
+3	NULL	1970-01-01 00:00:00.001	0	0	1970-01-01 00:00:00.000000	
+4	1969-12-31 23:59:59.000000	NULL	NULL	0.001	1969-12-31 00:00:00.000001	x
+5	2024-02-29 23:59:59.999999	1969-12-31 00:00:00.000	9999999999.99	-0.001	NULL	y
+6	2000-02-29 00:00:00.000000	1970-01-01 00:00:00.002	0.05	99999.999	1970-01-11 00:00:00.000000	z
+7	NULL	1970-01-01 00:00:00.003	0.06	0.007	1970-01-12 00:00:00.000000	w
+8	1970-01-01 00:00:00.000001	1970-01-01 00:00:00.004	0.07	0.008	1970-01-13 00:00:00.000000	v
+9	1970-01-01 23:59:59.999999	1970-01-01 00:00:00.005	0.08	0.009	1970-01-14 00:00:00.000000	u
+10	2023-11-14 22:13:20.000000	1970-01-01 00:00:00.006	1	0.01	1970-01-15 00:00:00.000000	t
+count(*)	count(flag)	sum(flag)	count(s)	count(distinct s)	min(day)	max(day)	min(ts)	max(ts)	sum(price)	min(d)	max(d)	round(sum(if(abs(d) < 1e10, d, 0)), 3)
+10	8	5	8	5	0001-01-01	9999-12-31	1969-12-31 23:59:59.000000	2024-02-29 23:59:59.999999	10000000124.689999	-1e300	42	40.617
+# filters, grouping and ordering over parquet columns
+s	cnt	small_sum
+apple	3	-101
+banana	2	0
+	1	7
+id
+5
+# data page v2, GZIP, run length encoded booleans and dictionary strings
+column_name	column_type	null	key	default	extra
+k	BIGINT	NO	NULL	NULL	NULL
+b	BOOLEAN	YES	NULL	NULL	NULL
+tag	VARCHAR	YES	NULL	NULL	NULL
+v	DOUBLE	YES	NULL	NULL	NULL
+k	b	tag	v
+0	1	x	NULL
+1	1	y	0.25
+2	1	NULL	0.5
+3	1	x	0.75
+4	1	z	1
+5	1	x	NULL
+6	1	y	1.5
+7	1	NULL	1.75
+8	1	x	2
+9	0	x	2.25
+10	NULL	z	NULL
+11	1	y	2.75
+# data page v2 with ZSTD and three pages in one column chunk
+count(*)	count(name)	count(distinct name)	sum(b)	min(k)	max(k)	sum(k)
+100	85	10	34	1	100	5050
+k	name	b
+1	NULL	1
+7	name_6	1
+8	NULL	0
+100	name_9	1
+# PLAIN_DICTIONARY pages, an uncompressed file and a one entry dictionary
+city	pop	country
+Beijing	21	CN
+Beijing	21	CN
+Hangzhou	NULL	CN
+Hangzhou	12	CN
+Shanghai	24	CN
+# 3000 rows in 3 row groups of 4 pages, read in batches
+count(*)	count(val)	sum(id)	sum(grp)	count(distinct name)	sum(val)
+3000	2700	4501500	8998	100	2025000
+grp	cnt	avg_val
+0	414	775.827
+1	414	775.552
+2	414	775.288
+3	415	775.000
+4	415	774.712
+5	414	774.448
+6	414	774.173
+id	name	val
+1	n001	0.5
+10	n010	NULL
+999	n099	499.5
+1000	n000	NULL
+1001	n001	500.5
+2000	n000	NULL
+2001	n001	1000.5
+3000	n000	NULL
+id	name
+2998	n098
+2997	n097
+# only the referenced columns are read
+Query Plan
+=========================
+|ID|OPERATOR       |NAME|
+-------------------------
+|0 |FILE TABLE SCAN|t   |
+=========================
+Outputs & filters:
+-------------------------------------
+  0 - output([t.id]), filter([t.flag]), rowset=16
+      access([t.flag], [t.id]), read_parquet('EXT_DIR/types.parquet')
+Query Plan
+===================================
+|ID|OPERATOR         |NAME        |
+-----------------------------------
+|0 |SCALAR GROUP BY  |            |
+|1 |└─FILE TABLE SCAN|read_parquet|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_COUNT(*)])
+  1 - output(nil), filter(nil), rowset=16
+      access(nil), read_parquet('EXT_DIR/wide.parquet')
+# unsupported and corrupt files
+ERROR 0A000: read_parquet: nested columns in 'EXT_DIR/nested.parquet' are not supported, only flat schemas can be read
+ERROR HY000: read_parquet: 'EXT_DIR/truncated.parquet' is not a valid parquet file: invalid footer length
+ERROR HY000: read_parquet: 'EXT_DIR/not_parquet.parquet' is not a valid parquet file: file is too small
+ERROR 0A000: file sql: extension '.csv' is not supported by the parquet reader
+ERROR 0A000: read_parquet option 'header' is not supported

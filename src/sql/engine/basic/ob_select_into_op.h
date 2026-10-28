@@ -23,6 +23,7 @@
 #include "sql/engine/basic/ob_select_into_basic.h"
 #include "sql/engine/basic/ob_external_file_writer.h"
 #include "sql/resolver/dml/ob_select_stmt.h"
+#include "sql/engine/basic/ob_file_scan_utils.h"
 
 namespace oceanbase
 {
@@ -126,7 +127,12 @@ public:
       external_properties_(),
       format_type_(ObExternalFileFormat::FormatType::CSV_FORMAT),
       block_id_(0),
-      need_commit_(true)
+      need_commit_(true),
+      is_copy_(false),
+      copy_exporter_(NULL),
+      copy_alloc_("FileSqlCopy"),
+      copy_buf_(NULL),
+      copy_buf_len_(0)
   {
   }
 
@@ -263,6 +269,13 @@ private:
 
   bool file_need_split(int64_t file_size);
 
+  // COPY ... TO 'file' (file sql): the rows are written by CsvFileExporter
+  int open_copy();
+  int copy_get_next_row();
+  int copy_get_next_batch(const int64_t max_row_cnt);
+  int copy_write_field(const ObExpr &expr, const ObDatum &datum, const bool is_first);
+  int copy_finish(const int64_t row_count);
+
 private:
   int64_t top_limit_cnt_;
   bool is_first_;
@@ -292,6 +305,11 @@ private:
   ObExternalFileFormat::FormatType format_type_;
   uint32_t block_id_;
   bool need_commit_;
+  bool is_copy_;
+  CsvFileExporter *copy_exporter_;
+  common::ObArenaAllocator copy_alloc_;   // text of one field
+  char *copy_buf_;
+  int64_t copy_buf_len_;
   static const int64_t SHARED_BUFFER_SIZE = 2LL * 1024 * 1024;
 
 };

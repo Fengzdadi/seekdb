@@ -1,0 +1,54 @@
+# union of the fields of all objects; missing fields and JSON null are NULL
+id	kind	value	ok	at	extra	empty
+1	click	1	1	2026-08-01 10:00:00	NULL	NULL
+2	view	2.5	NULL	NULL	x	NULL
+3	NULL	n/a	0	2026-08-02 11:30:00	NULL	NULL
+4	NULL	NULL	NULL	NULL	NULL	NULL
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+kind	VARCHAR	YES	NULL	NULL	NULL
+value	VARCHAR	YES	NULL	NULL	NULL
+ok	BOOLEAN	YES	NULL	NULL	NULL
+at	DATETIME	YES	NULL	NULL	NULL
+extra	VARCHAR	YES	NULL	NULL	NULL
+empty	NULL	YES	NULL	NULL	NULL
+# numeric bounds, int to double widening, date strings and conflicting types
+a	b	c	d	e
+-9223372036854775808	-3	NULL	NULL	true
+1	1	1	2026-08-01	1
+9223372036854775807	1.5	0	2026-08-02	text
+column_name	column_type	null	key	default	extra
+a	BIGINT	NO	NULL	NULL	NULL
+b	DOUBLE	NO	NULL	NULL	NULL
+c	BOOLEAN	YES	NULL	NULL	NULL
+d	DATE	YES	NULL	NULL	NULL
+e	VARCHAR	NO	NULL	NULL	NULL
+count(*)	sum(b)	min(d)	max(d)	count(c)
+3	-0.5	2026-08-01	2026-08-02	2
+# blank lines are skipped and the format option accepts newline delimited input
+count(*)
+4
+count(*)
+4
+# nested objects and arrays are rejected with their position
+ERROR 0A000: read_json: nested array in field 'tags' at line 1 is not supported, only flat objects can be read
+ERROR 0A000: read_json: nested object in field 'v' at line 2 is not supported, only flat objects can be read
+ERROR 0A000: read_json: line 1 is a JSON array, only newline-delimited flat objects are supported
+# invalid JSON reports the line and position; ignore_errors skips the line
+ERROR 22032: read_json: invalid JSON at line 2, position 9: expected a string key
+id
+1
+ERROR 42000: read_json: line 1 exceeds maximum_object_size (32 bytes)
+# unsupported options
+ERROR 0A000: read_json option 'format' other than 'newline_delimited' is not supported
+ERROR HY000: Incorrect value for read_json option 'format'
+ERROR 0A000: read_json option 'delim' is not supported
+ERROR 0A000: read_json option 'sample_size' other than -1 (full scan inference) is not supported
+# expressions over JSON columns
+kind	cnt	last_at
+NULL	2	2026-08-02 11:30:00
+click	1	2026-08-01 10:00:00
+view	1	NULL
+id	answer	days
+1	yes	1
+3	no	2

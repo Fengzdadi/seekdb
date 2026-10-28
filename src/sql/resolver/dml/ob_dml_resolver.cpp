@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
 #include "ob_dml_resolver.h"
+#include "sql/resolver/dml/ob_file_table_resolver.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/resolver/dml/ob_default_value_utils.h"
@@ -2724,6 +2725,11 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
         }
         break;
       }
+      case T_FILE_TABLE_EXPRESSION: {
+        if (OB_FAIL(resolve_file_table_item(*table_node, table_item))) {
+        }
+        break;
+      }
       default:
         /* won't be here */
         ret = OB_ERR_PARSER_SYNTAX;
@@ -3086,6 +3092,132 @@ int ObDMLResolver::resolve_single_table_column_item(const TableItem &table_item,
   } else if (table_item.is_values_table()) {
     if (OB_ISNULL(col_item = stmt->get_column_item(table_item.table_id_, column_name))) {
       ret = OB_ERR_BAD_FIELD_ERROR;
+    }
+  } else if (table_item.is_file_table()) {
+    if (OB_FAIL(resolve_file_table_column_item(table_item, column_name, col_item))) {
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item)
+{
+  int ret = OB_SUCCESS;
+  ObDMLStmt *stmt = get_stmt();
+  FileTableDesc *desc = NULL;
+  TableItem *item = NULL;
+  ObString alias_name;
+  if (OB_ISNULL(stmt) || OB_ISNULL(session_info_) || OB_ISNULL(allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (params_.is_from_create_view_) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "file table function in view definition");
+  } else if (OB_FAIL(FileTableResolver::resolve_file_table(table_node, *session_info_,
+                                                           *allocator_, desc, alias_name))) {
+    LOG_WARN("failed to resolve file table", K(ret));
+  } else if (OB_ISNULL(item = stmt->create_table_item(*allocator_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    item->table_id_ = generate_table_id();
+    item->table_name_ = alias_name;
+    item->alias_name_ = alias_name;
+    item->type_ = TableItem::FILE_TABLE;
+    item->is_view_table_ = false;
+    item->file_table_def_ = desc;
+    if (OB_FAIL(stmt->add_table_item(session_info_, item, params_.have_same_table_name_))) {
+    } else {
+      FileTableResolver::disable_plan_cache(params_.query_ctx_);
+      table_item = item;
+    }
+  }
+  return ret;
+}
+
+// Column items of a file table are created on reference only, so the scan reads and
+// converts just the referenced columns. The column id is OB_APP_MIN_COLUMN_ID + index.
+int ObDMLResolver::resolve_file_table_column_item(const TableItem &table_item,
+                                                  const int64_t column_idx,
+                                                  ColumnItem *&col_item)
+{
+  int ret = OB_SUCCESS;
+  ObDMLStmt *stmt = get_stmt();
+  const FileTableDesc *desc = table_item.file_table_def_;
+  const uint64_t column_id = OB_APP_MIN_COLUMN_ID + column_idx;
+  col_item = NULL;
+  if (OB_ISNULL(stmt) || OB_ISNULL(desc) || OB_ISNULL(session_info_)
+      || OB_ISNULL(params_.expr_factory_)
+      || OB_UNLIKELY(column_idx < 0 || column_idx >= desc->get_column_count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid file table column", K(ret), K(column_idx));
+  } else if (NULL != (col_item = stmt->get_column_item_by_id(table_item.table_id_, column_id))) {
+    // already resolved
+  } else {
+    const FileColumnDesc &column = desc->columns_.at(column_idx);
+    ObColumnRefRawExpr *col_expr = NULL;
+    ObRawExprResType result_type;
+    ColumnItem column_item;
+    if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_COLUMN, col_expr))) {
+    } else if (OB_ISNULL(col_expr)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(FileTableResolver::get_column_type(column, *session_info_, result_type))) {
+    } else {
+      col_expr->set_ref_id(table_item.table_id_, column_id);
+      col_expr->set_result_type(result_type);
+      col_expr->set_column_attr(table_item.get_table_name(), column.name_);
+      col_expr->set_database_name(table_item.database_name_);
+      column_item.expr_ = col_expr;
+      column_item.table_id_ = table_item.table_id_;
+      column_item.column_id_ = column_id;
+      column_item.column_name_ = column.name_;
+      if (OB_FAIL(col_expr->add_flag(IS_COLUMN))) {
+      } else if (OB_FAIL(col_expr->extract_info())) {
+      } else if (OB_FAIL(stmt->add_column_item(column_item))) {
+      } else {
+        col_item = stmt->get_column_item(stmt->get_column_size() - 1);
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_file_table_column_item(const TableItem &table_item,
+                                                  const ObString &column_name,
+                                                  ColumnItem *&col_item)
+{
+  int ret = OB_SUCCESS;
+  const FileTableDesc *desc = table_item.file_table_def_;
+  int64_t idx = -1;
+  col_item = NULL;
+  if (OB_ISNULL(desc)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    for (int64_t i = 0; idx < 0 && i < desc->get_column_count(); ++i) {
+      if (ObCharset::case_insensitive_equal(desc->columns_.at(i).name_, column_name)) {
+        idx = i;
+      }
+    }
+    if (idx < 0) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+    } else if (OB_FAIL(resolve_file_table_column_item(table_item, idx, col_item))) {
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_all_file_table_columns(const TableItem &table_item,
+                                                  ObIArray<ColumnItem> &column_items)
+{
+  int ret = OB_SUCCESS;
+  const FileTableDesc *desc = table_item.file_table_def_;
+  if (OB_ISNULL(desc)) {
+    ret = OB_ERR_UNEXPECTED;
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < desc->get_column_count(); ++i) {
+    ColumnItem *col_item = NULL;
+    if (OB_FAIL(resolve_file_table_column_item(table_item, i, col_item))) {
+    } else if (OB_ISNULL(col_item)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(column_items.push_back(*col_item))) {
     }
   }
   return ret;

@@ -23,6 +23,7 @@
 #include "lib/charset/ob_charset.h"
 #include "sql/optimizer/ob_log_plan.h"
 #include "sql/monitor/ob_sql_plan.h"
+#include "sql/engine/basic/ob_file_scan_utils.h"
 namespace oceanbase
 {
 using namespace common;
@@ -358,6 +359,28 @@ int ObDMLStmtPrinter::print_table(const TableItem *table_item,
     }
     case TableItem::VALUES_TABLE: {
       if (OB_FAIL(print_values_table(*table_item, no_print_alias))) {
+      }
+      break;
+    }
+    case TableItem::FILE_TABLE: {
+      // read_csv('path') alias, options are not printed
+      if (OB_ISNULL(table_item->file_table_def_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        const ObString &func = table_item->file_table_def_->func_name_;
+        const ObString &path = table_item->file_table_def_->path_;
+        DATA_PRINTF("%.*s('", LEN_AND_PTR(func));
+        for (int64_t i = 0; OB_SUCC(ret) && i < path.length(); ++i) {
+          if ('\'' == path[i]) {
+            DATA_PRINTF("''");
+          } else if ('\\' == path[i]) {
+            DATA_PRINTF("\\\\");
+          } else {
+            DATA_PRINTF("%c", path[i]);
+          }
+        }
+        DATA_PRINTF("') ");
+        PRINT_IDENT_WITH_QUOT(table_item->alias_name_);
       }
       break;
     }

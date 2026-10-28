@@ -52,6 +52,46 @@
   } \
   malloc_non_terminal_node(explain_stmt, result->malloc_pool_, T_EXPLAIN, 5, \
                            type_node, display_node, into_table, set_statement_id, stmt);
+
+/* file sql table functions: read_csv(...), read_json(...), read_parquet(...), glob(...) */
+#include <string.h>
+#include <strings.h>
+static int is_file_table_function_name(const ParseNode *node)
+{
+  static const char *names[] = {"read_csv", "read_csv_auto", "read_json", "read_json_auto",
+                                "read_ndjson", "read_ndjson_auto", "read_parquet", "parquet_scan",
+                                "glob"};
+  int found = 0;
+  size_t i = 0;
+  if (NULL != node && NULL != node->str_value_) {
+    for (i = 0; !found && i < sizeof(names) / sizeof(names[0]); ++i) {
+      found = strlen(names[i]) == (size_t)node->str_len_
+              && 0 == strncasecmp(names[i], node->str_value_, node->str_len_);
+    }
+  }
+  return found;
+}
+
+static int contains_file_table_expr(const ParseNode *node)
+{
+  int found = 0;
+  int64_t i = 0;
+  if (NULL != node) {
+    if (T_FILE_TABLE_EXPRESSION == node->type_) {
+      found = 1;
+    }
+    for (i = 0; !found && i < node->num_child_; ++i) {
+      found = contains_file_table_expr(node->children_[i]);
+    }
+  }
+  return found;
+}
+
+#define CHECK_FILE_TABLE_FUNCTION_NAME(name_node, loc)              \
+  if (!is_file_table_function_name(name_node)) {                  \
+    yyerror(loc, result, "unknown table function\n");             \
+    YYERROR;                                                       \
+  }
 %}
 
 %destructor {destroy_tree($$);}<node>
@@ -511,6 +551,7 @@ END_P SET_VAR DELIMITER
 %type <node> column_list_with_boost with_param_column_ref
 %type <node> es_sql_opt
 %type <node> hybrid_search_expr hybrid_search_param
+%type <node> file_table_expr opt_file_table_option_list file_table_option_list file_table_option file_option_name file_option_value copy_stmt copy_into_clause opt_copy_option_list copy_option_list copy_option copy_option_value
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> algorithm_opt lock_opt
 %type <node> flush_privileges_stmt opt_flush_privileges_scope
@@ -582,6 +623,7 @@ stmt:
   | drop_table_stmt         { $$ = $1; check_question_mark($$, result); }
   | drop_view_stmt          { $$ = $1; check_question_mark($$, result); }
   | explain_stmt            { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
   | create_outline_stmt     { $$ = $1; question_mark_issue($$, result); }
   | alter_outline_stmt      { $$ = $1; question_mark_issue($$, result); }
   | drop_outline_stmt       { $$ = $1; check_question_mark($$, result); }
@@ -10848,6 +10890,10 @@ tbl_name
 {
   $$ = $1;
 }
+| file_table_expr
+{
+  $$ = $1;
+}
 ;
 
 tbl_name:
@@ -12265,7 +12311,15 @@ explain_or_desc relation_factor opt_desc_column_option
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $2, NULL, $3);
 }
 
-| explain_or_desc explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);}
+| explain_or_desc explainable_stmt
+{
+  if (NULL != $1 && NULL != $2 && T_SELECT == $2->type_ && contains_file_table_expr($2)) {
+    /* DESCRIBE SELECT ... FROM read_*(...) returns the result schema */
+    malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_DESCRIBE, 1, $2);
+  } else {
+    GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);
+  }
+}
 | explain_or_desc PRETTY explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY, $3, NULL, NULL);}
 | explain_or_desc PRETTY_COLOR explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY_COLOR, $3, NULL, NULL);}
 
@@ -12306,8 +12360,8 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+| DESCRIBE { malloc_terminal_node($$, result->malloc_pool_, T_FILE_SQL_DESCRIBE); }
+| DESC  { malloc_terminal_node($$, result->malloc_pool_, T_FILE_SQL_DESCRIBE); }
 ;
 
 explainable_stmt:
@@ -17476,6 +17530,217 @@ literal
 | USER_VARIABLE
 {
   $$ = $1;
+}
+;
+
+/*****************************************************************************
+ *
+ *  file sql: read_csv / read_json / read_ndjson / read_parquet / glob table functions
+ *
+ *****************************************************************************/
+file_table_expr:
+NAME_OB '(' STRING_VALUE opt_file_table_option_list ')'
+{
+  CHECK_FILE_TABLE_FUNCTION_NAME($1, &@1);
+  ParseNode *alias_node = NULL;
+  make_name_node(alias_node, result->malloc_pool_, "");
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, alias_node);
+}
+| NAME_OB '(' STRING_VALUE opt_file_table_option_list ')' relation_name
+{
+  CHECK_FILE_TABLE_FUNCTION_NAME($1, &@1);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, $6);
+}
+| NAME_OB '(' STRING_VALUE opt_file_table_option_list ')' AS relation_name
+{
+  CHECK_FILE_TABLE_FUNCTION_NAME($1, &@1);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, $7);
+}
+;
+
+opt_file_table_option_list:
+/* EMPTY */
+{ $$ = NULL; }
+| ',' file_table_option_list
+{
+  merge_nodes($$, result, T_FILE_TABLE_OPTION_LIST, $2);
+}
+;
+
+file_table_option_list:
+file_table_option
+{
+  $$ = $1;
+}
+| file_table_option_list ',' file_table_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+file_table_option:
+file_option_name COMP_EQ file_option_value
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_OPTION, 2, $1, $3);
+}
+;
+
+file_option_name:
+NAME_OB
+{
+  $$ = $1;
+}
+| unreserved_keyword
+{
+  get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
+}
+| SKIP
+{
+  // reserved for SKIP LOCKED, but also the read_csv option that skips leading lines
+  get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
+}
+;
+
+file_option_value:
+STRING_VALUE
+{
+  $$ = $1;
+}
+| INTNUM
+{
+  $$ = $1;
+}
+| '-' INTNUM
+{
+  $2->value_ = -$2->value_;
+  $$ = $2;
+}
+| DECIMAL_VAL
+{
+  $$ = $1;
+}
+| BOOL_VALUE
+{
+  $$ = $1;
+}
+| NAME_OB
+{
+  $$ = $1;
+}
+;
+
+/*****************************************************************************
+ *
+ *  file sql: COPY table-or-query TO 'path' [WITH] (option, ...)
+ *  The statement is rewritten into SELECT ... INTO with a T_COPY_INTO clause.
+ *
+ *****************************************************************************/
+copy_stmt:
+COPY select_with_parens TO copy_into_clause
+{
+  $$ = $2;
+  if (NULL != $$->children_[PARSE_SELECT_INTO] || NULL != $$->children_[PARSE_SELECT_INTO_EXTRA]) {
+    yyerror(&@1, result, "");
+    YYERROR;
+  } else {
+    $$->children_[PARSE_SELECT_INTO_EXTRA] = $4;
+  }
+}
+| COPY relation_factor TO copy_into_clause
+{
+  ParseNode *project_list = NULL;
+  ParseNode *star_node = NULL;
+  malloc_terminal_node(star_node, result->malloc_pool_, T_STAR);
+  ParseNode *upper_node = NULL;
+  malloc_non_terminal_node(upper_node, result->malloc_pool_, T_PROJECT_STRING, 1, star_node);
+  dup_string_to_node(upper_node, result->malloc_pool_, "*");
+  merge_nodes(project_list, result, T_PROJECT_LIST, upper_node);
+  ParseNode *table_node = NULL;
+  malloc_non_terminal_node(table_node, result->malloc_pool_, T_ORG, 4, $2, NULL, NULL, NULL);
+  ParseNode *from_list = NULL;
+  merge_nodes(from_list, result, T_FROM_LIST, table_node);
+  ParseNode *select_node = NULL;
+  malloc_select_node(select_node, result->malloc_pool_);
+  select_node->children_[PARSE_SELECT_SELECT] = project_list;
+  select_node->children_[PARSE_SELECT_FROM] = from_list;
+  select_node->children_[PARSE_SELECT_INTO_EXTRA] = $4;
+  $$ = select_node;
+}
+;
+
+copy_into_clause:
+STRING_VALUE opt_copy_option_list
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_INTO, 2, $1, $2);
+}
+;
+
+opt_copy_option_list:
+/* EMPTY */
+{ $$ = NULL; }
+| '(' copy_option_list ')'
+{
+  merge_nodes($$, result, T_COPY_OPTION_LIST, $2);
+}
+| WITH '(' copy_option_list ')'
+{
+  merge_nodes($$, result, T_COPY_OPTION_LIST, $3);
+}
+;
+
+copy_option_list:
+copy_option
+{
+  $$ = $1;
+}
+| copy_option_list ',' copy_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+copy_option:
+file_option_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, $1, NULL);
+}
+| file_option_name copy_option_value
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, $1, $2);
+}
+| file_option_name COMP_EQ copy_option_value
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, $1, $3);
+}
+| NULLX copy_option_value
+{
+  (void)($1);
+  ParseNode *name_node = NULL;
+  make_name_node(name_node, result->malloc_pool_, "nullstr");
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_OPTION, 2, name_node, $2);
+}
+;
+
+copy_option_value:
+STRING_VALUE
+{
+  $$ = $1;
+}
+| INTNUM
+{
+  $$ = $1;
+}
+| BOOL_VALUE
+{
+  $$ = $1;
+}
+| NAME_OB
+{
+  $$ = $1;
+}
+| unreserved_keyword
+{
+  get_non_reserved_node($$, result->malloc_pool_, @1.first_column, @1.last_column);
 }
 ;
 

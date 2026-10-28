@@ -1,0 +1,55 @@
+# inferred CSV types
+column_name	column_type	null	key	default	extra
+i	BIGINT	NO	NULL	NULL	NULL
+big	BIGINT	YES	NULL	NULL	NULL
+neg_edge	BIGINT	YES	NULL	NULL	NULL
+overflow	DOUBLE	YES	NULL	NULL	NULL
+dbl	DOUBLE	NO	NULL	NULL	NULL
+mixed_num	DOUBLE	YES	NULL	NULL	NULL
+flag	BOOLEAN	YES	NULL	NULL	NULL
+flag_num	BIGINT	YES	NULL	NULL	NULL
+d	DATE	YES	NULL	NULL	NULL
+bad_d	VARCHAR	YES	NULL	NULL	NULL
+dt	DATETIME	YES	NULL	NULL	NULL
+dt_frac	DATETIME	YES	NULL	NULL	NULL
+mixed_dt	DATETIME	YES	NULL	NULL	NULL
+txt	VARCHAR	YES	NULL	NULL	NULL
+all_null	NULL	YES	NULL	NULL	NULL
+i	big	neg_edge	overflow	dbl	mixed_num	flag	flag_num
+1	9223372036854775807	-9223372036854775808	9.223372036854776e18	1.5	1	1	1
+2	0	0	1	-2	2.5	0	0
+3	NULL	NULL	NULL	1000	NULL	NULL	NULL
+i	d	bad_d	dt	dt_frac	mixed_dt	txt	all_null
+1	2026-02-28	2026-02-29	2026-08-01 10:00:00	2026-08-01 10:00:00.123456	2026-08-01 00:00:00	abc	NULL
+2	2024-02-29	2026-13-01	2026-08-01 23:59:59	2026-08-01 10:00:01.500000	2026-08-02 08:00:00	NULL	NULL
+3	NULL	NULL	NULL	NULL	NULL	123	NULL
+# inferred values work with typed expressions
+big_minus_one	neg_plus_one	dbl2	next_day	y	not_flag
+9223372036854775806	-9223372036854775807	3	2026-03-01	2026	0
+count(all_null)	count(*)	sum(dbl)	max(mixed_dt)
+0	3	999.5	2026-08-02 08:00:00
+# all_varchar disables inference
+column_name	column_type	null	key	default	extra
+order_id	VARCHAR	NO	NULL	NULL	NULL
+customer_id	VARCHAR	YES	NULL	NULL	NULL
+amount	VARCHAR	NO	NULL	NULL	NULL
+order_day	VARCHAR	NO	NULL	NULL	NULL
+# the same file always infers the same schema
+column_name	column_type	null	key	default	extra
+order_id	BIGINT	NO	NULL	NULL	NULL
+customer_id	BIGINT	YES	NULL	NULL	NULL
+amount	DOUBLE	NO	NULL	NULL	NULL
+order_day	DATE	NO	NULL	NULL	NULL
+column_name	column_type	null	key	default	extra
+order_id	BIGINT	NO	NULL	NULL	NULL
+customer_id	BIGINT	YES	NULL	NULL	NULL
+amount	DOUBLE	NO	NULL	NULL	NULL
+order_day	DATE	NO	NULL	NULL	NULL
+# DESCRIBE of a projection, an alias and a parquet file
+column_name	column_type	null	key	default	extra
+order_id	BIGINT	NO	NULL	NULL	NULL
+amt	DOUBLE	NO	NULL	NULL	NULL
+column_name	column_type	null	key	default	extra
+city	VARCHAR	NO	NULL	NULL	NULL
+pop	BIGINT	YES	NULL	NULL	NULL
+country	VARCHAR	NO	NULL	NULL	NULL

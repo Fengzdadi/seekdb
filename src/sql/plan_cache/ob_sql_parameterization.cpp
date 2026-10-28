@@ -341,6 +341,10 @@ bool ObSqlParameterization::is_tree_not_param(const ParseNode *tree)
     ret_bool = true;
   } else if (T_VEC_INDEX_PARAMS == tree->type_) {
     ret_bool = true;
+  } else if (T_FILE_TABLE_EXPRESSION == tree->type_ || T_COPY_INTO == tree->type_
+             || T_FILE_SQL_DESCRIBE == tree->type_) {
+    // file sql paths and options are read as literals by the resolver
+    ret_bool = true;
   } else {
     // do nothing
   }

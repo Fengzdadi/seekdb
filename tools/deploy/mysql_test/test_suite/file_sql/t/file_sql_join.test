@@ -1,0 +1,127 @@
+# owner: database-competition
+# owner group: SQL
+# description: Join file tables with each other, across formats and with ordinary tables.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+let $ORDERS = read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+let $CUSTOMERS = read_json('$FILE_SQL_EXT_DIR/customers.jsonl');
+let $CITIES = read_parquet('$FILE_SQL_EXT_DIR/plain_dict.parquet');
+set session enable_file_sql = ON;
+--disable_warnings
+drop table if exists file_sql_region;
+--enable_warnings
+create table file_sql_region(city varchar(20) primary key, region varchar(20));
+insert into file_sql_region values ('Hangzhou', 'east'), ('Beijing', 'north'), ('Shanghai', 'east');
+
+--echo # INNER JOIN of a CSV file and a JSONL file
+eval select o.order_id, c.name, o.amount
+       from $ORDERS o join $CUSTOMERS c on o.customer_id = c.customer_id
+      order by o.order_id;
+
+--echo # LEFT JOIN keeps orders without a customer and NULL keys
+eval select o.order_id, o.customer_id, c.name, c.vip
+       from $ORDERS o left join read_ndjson('$FILE_SQL_EXT_DIR/customers.jsonl') c
+         on o.customer_id = c.customer_id
+      order by o.order_id;
+
+--echo # RIGHT JOIN keeps customers without orders
+eval select c.name, count(o.order_id) as orders, sum(o.amount) as total
+       from $ORDERS o right join $CUSTOMERS c on o.customer_id = c.customer_id
+      group by c.name
+      order by c.name;
+
+--echo # JSONL joined with Parquet
+eval select c.city, count(*) as cnt, max(p.pop) as pop
+       from $CUSTOMERS c join $CITIES p on c.city = p.city
+      group by c.city
+      order by c.city;
+
+--echo # CSV joined with Parquet through a LEFT JOIN
+eval select o.order_id, p.name, p.val
+       from $ORDERS o left join read_parquet('$FILE_SQL_EXT_DIR/wide.parquet') p
+         on p.id = o.customer_id and p.grp = o.customer_id
+      order by o.order_id;
+
+--echo # three way join with an ordinary table
+eval select r.region, count(*) as orders, sum(o.amount) as amount
+       from $ORDERS o
+       join $CUSTOMERS c on o.customer_id = c.customer_id
+       join file_sql_region r on r.city = c.city
+      group by r.region
+      order by r.region;
+
+--echo # self join and non equal join conditions
+eval select a.order_id as first_order, b.order_id as later_order
+       from $ORDERS a join $ORDERS b
+         on a.customer_id = b.customer_id and a.order_id < b.order_id
+      order by 1, 2;
+eval select a.order_id, count(b.order_id) as bigger
+       from $ORDERS a left join $ORDERS b on b.amount > a.amount
+      group by a.order_id
+      order by a.order_id;
+
+--echo # semi join, anti join and scalar subquery
+eval select name from $CUSTOMERS c
+      where customer_id in (select customer_id from $ORDERS o where amount > 50)
+      order by name;
+eval select name from $CUSTOMERS c
+      where not exists (select 1 from $ORDERS o where o.customer_id = c.customer_id)
+      order by name;
+eval select c.name, (select max(amount) from $ORDERS o where o.customer_id = c.customer_id) as top
+       from $CUSTOMERS c
+      order by c.name;
+
+--echo # UNION of two formats and a join inside a derived table
+eval select customer_id from $ORDERS where customer_id is not null
+      union
+     select customer_id from $CUSTOMERS
+      order by 1;
+eval select t.city, sum(t.amount) as amount
+       from (select c.city, o.amount
+               from $ORDERS o join $CUSTOMERS c using (customer_id)) t
+      group by t.city
+      order by t.city;
+
+--echo # every join method gives the same rows; nested loop joins rescan the inner file
+eval select /*+ leading(o c) use_hash(c) */ o.order_id, c.name
+       from $ORDERS o join $CUSTOMERS c on o.customer_id = c.customer_id
+      order by o.order_id;
+eval select /*+ leading(o c) use_nl(c) */ o.order_id, c.name
+       from $ORDERS o join $CUSTOMERS c on o.customer_id = c.customer_id
+      order by o.order_id;
+eval select /*+ leading(o c) use_nl(c) no_use_nl_materialization(c) */ o.order_id, c.name
+       from $ORDERS o join $CUSTOMERS c on o.customer_id = c.customer_id
+      order by o.order_id;
+eval select /*+ leading(o c) use_merge(c) */ o.order_id, c.name
+       from $ORDERS o left join $CUSTOMERS c on o.customer_id = c.customer_id
+      order by o.order_id;
+eval select /*+ leading(c o) use_nl(o) */ c.name, count(o.order_id) as orders
+       from $CUSTOMERS c left join $ORDERS o on o.customer_id = c.customer_id
+      group by c.name
+      order by c.name;
+
+--echo # plans are native seekdb operators over FILE TABLE SCAN
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select o.order_id, c.name
+       from $ORDERS o join $CUSTOMERS c on o.customer_id = c.customer_id;
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select /*+ leading(o c) use_nl(c) */ o.order_id, c.name
+       from $ORDERS o left join $CUSTOMERS c on o.customer_id = c.customer_id
+      where o.amount > 20;
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select /*+ leading(o c) use_nl(c) no_use_nl_materialization(c) */ o.order_id, c.name
+       from $ORDERS o join $CUSTOMERS c on o.customer_id = c.customer_id;
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select c.city, count(*)
+       from $CUSTOMERS c join $CITIES p on c.city = p.city
+      group by c.city;
+
+drop table file_sql_region;
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

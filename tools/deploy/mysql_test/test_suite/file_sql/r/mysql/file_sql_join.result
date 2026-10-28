@@ -1,0 +1,168 @@
+# INNER JOIN of a CSV file and a JSONL file
+order_id	name	amount
+1001	Alice	250.5
+1002	Bob	99.9
+1003	Alice	12
+1006	Chen	80
+# LEFT JOIN keeps orders without a customer and NULL keys
+order_id	customer_id	name	vip
+1001	1	Alice	1
+1002	2	Bob	0
+1003	1	Alice	1
+1004	4	NULL	NULL
+1005	NULL	NULL	NULL
+1006	3	Chen	NULL
+# RIGHT JOIN keeps customers without orders
+name	orders	total
+Alice	2	262.5
+Bob	1	99.9
+Chen	1	80
+Dana	0	NULL
+# JSONL joined with Parquet
+city	cnt	pop
+Beijing	2	21
+Hangzhou	4	12
+Shanghai	1	24
+# CSV joined with Parquet through a LEFT JOIN
+order_id	name	val
+1001	n001	0.5
+1002	n002	1
+1003	n001	0.5
+1004	n004	2
+1005	NULL	NULL
+1006	n003	1.5
+# three way join with an ordinary table
+region	orders	amount
+east	3	342.5
+north	1	99.9
+# self join and non equal join conditions
+first_order	later_order
+1001	1003
+order_id	bigger
+1001	1
+1002	2
+1003	5
+1004	0
+1005	4
+1006	3
+# semi join, anti join and scalar subquery
+name
+Alice
+Bob
+Chen
+name
+Dana
+name	top
+Alice	250.5
+Bob	99.9
+Chen	80
+Dana	NULL
+# UNION of two formats and a join inside a derived table
+customer_id
+1
+2
+3
+4
+5
+city	amount
+Beijing	99.9
+Hangzhou	262.5
+Shanghai	80
+# every join method gives the same rows; nested loop joins rescan the inner file
+order_id	name
+1001	Alice
+1002	Bob
+1003	Alice
+1006	Chen
+order_id	name
+1001	Alice
+1002	Bob
+1003	Alice
+1006	Chen
+order_id	name
+1001	Alice
+1002	Bob
+1003	Alice
+1006	Chen
+order_id	name
+1001	Alice
+1002	Bob
+1003	Alice
+1004	NULL
+1005	NULL
+1006	Chen
+name	orders
+Alice	2
+Bob	1
+Chen	1
+Dana	0
+# plans are native seekdb operators over FILE TABLE SCAN
+Query Plan
+===========================
+|ID|OPERATOR         |NAME|
+---------------------------
+|0 |HASH JOIN        |    |
+|1 |├─FILE TABLE SCAN|c   |
+|2 |└─FILE TABLE SCAN|o   |
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([o.order_id], [c.name]), filter(nil), rowset=16
+      equal_conds([o.customer_id = c.customer_id]), other_conds(nil)
+  1 - output([c.customer_id], [c.name]), filter(nil), rowset=16
+      access([c.customer_id], [c.name]), read_json('EXT_DIR/customers.jsonl')
+  2 - output([o.customer_id], [o.order_id]), filter(nil), rowset=16
+      access([o.customer_id], [o.order_id]), read_csv('EXT_DIR/orders.csv')
+Query Plan
+=================================
+|ID|OPERATOR               |NAME|
+---------------------------------
+|0 |NESTED-LOOP OUTER JOIN |    |
+|1 |├─FILE TABLE SCAN      |o   |
+|2 |└─MATERIAL             |    |
+|3 |  └─FILE TABLE SCAN    |c   |
+=================================
+Outputs & filters:
+-------------------------------------
+  0 - output([o.order_id], [c.name]), filter(nil), rowset=16
+      conds([o.customer_id = c.customer_id]), nl_params_(nil), use_batch=false
+  1 - output([o.customer_id], [o.order_id]), filter([o.amount > cast(20, DOUBLE(-1, -1))]), rowset=16
+      access([o.customer_id], [o.amount], [o.order_id]), read_csv('EXT_DIR/orders.csv')
+  2 - output([c.name], [c.customer_id]), filter(nil), rowset=16
+  3 - output([c.customer_id], [c.name]), filter(nil), rowset=16
+      access([c.customer_id], [c.name]), read_json('EXT_DIR/customers.jsonl')
+Query Plan
+===========================
+|ID|OPERATOR         |NAME|
+---------------------------
+|0 |NESTED-LOOP JOIN |    |
+|1 |├─FILE TABLE SCAN|o   |
+|2 |└─FILE TABLE SCAN|c   |
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([o.order_id], [c.name]), filter(nil), rowset=16
+      conds([o.customer_id = c.customer_id]), nl_params_(nil), use_batch=false
+  1 - output([o.customer_id], [o.order_id]), filter(nil), rowset=16
+      access([o.customer_id], [o.order_id]), read_csv('EXT_DIR/orders.csv')
+  2 - output([c.customer_id], [c.name]), filter(nil), rowset=16
+      access([c.customer_id], [c.name]), read_json('EXT_DIR/customers.jsonl')
+Query Plan
+=============================
+|ID|OPERATOR           |NAME|
+-----------------------------
+|0 |HASH GROUP BY      |    |
+|1 |└─HASH JOIN        |    |
+|2 |  ├─FILE TABLE SCAN|c   |
+|3 |  └─FILE TABLE SCAN|p   |
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([c.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([c.city]), agg_func([T_FUN_COUNT(*)])
+  1 - output([c.city]), filter(nil), rowset=16
+      equal_conds([c.city = p.city]), other_conds(nil)
+  2 - output([c.city]), filter(nil), rowset=16
+      access([c.city]), read_json('EXT_DIR/customers.jsonl')
+  3 - output([p.city]), filter(nil), rowset=16
+      access([p.city]), read_parquet('EXT_DIR/plain_dict.parquet')

@@ -1,0 +1,105 @@
+# owner: database-competition
+# owner group: SQL
+# description: COPY table-or-query TO a CSV file: options, quoting, read back and failures.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+let $FILE_SQL_HOST = query_get_value('select host_ip()',host_ip(), 1);
+let $OUT = $FILE_SQL_EXT_DIR/out;
+let $MKDIR_CMD = ssh $FILE_SQL_HOST 'mkdir -p "$OUT"';
+exec $MKDIR_CMD;
+--disable_warnings
+drop table if exists file_sql_copy_src;
+--enable_warnings
+create table file_sql_copy_src(id int primary key, name varchar(32), note varchar(64),
+                               amount decimal(10, 2), day date, ts datetime);
+insert into file_sql_copy_src values
+  (1, 'Alice', 'plain', 10.50, '2026-08-01', '2026-08-01 10:11:12'),
+  (2, 'Bob', 'comma, inside', -3.25, NULL, '2026-08-02 00:00:00'),
+  (3, 'Chen', 'say "hi"', NULL, '2026-08-03', NULL),
+  (4, NULL, 'two\nlines', 0, '2026-08-04', '2026-08-04 23:59:59'),
+  (5, '中文', '', 99999999.99, '2026-08-05', '2026-08-05 01:02:03');
+
+--echo # COPY is disabled together with the file readers
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval copy file_sql_copy_src to '$OUT/disabled.csv';
+set session enable_file_sql = ON;
+
+--echo # COPY writes a header line by default
+eval copy file_sql_copy_src to '$OUT/default.csv';
+eval describe select * from read_csv('$OUT/default.csv');
+eval select count(*), sum(id) from read_csv('$OUT/default.csv');
+
+--echo # COPY a table without a header: NULL is an empty field, an empty string is quoted
+eval copy file_sql_copy_src to '$OUT/plain.csv' (header false);
+eval select column0, column1, replace(column2, char(10), '<LF>') as column2, column2 is null as c2_null,
+            column3, column4, column5
+       from read_csv('$OUT/plain.csv', header = false)
+      order by column0;
+
+--echo # header, delimiter, quote, escape and NULL text options, read back with the same dialect
+eval copy file_sql_copy_src to '$OUT/dialect.csv'
+       (format csv, header, delimiter '|', quote '''', escape '\\\\', nullstr 'N/A');
+eval select id, name, replace(note, char(10), '<LF>') as note, amount, day, ts
+       from read_csv('$OUT/dialect.csv', delim = '|', quote = '''', escape = '\\\\', nullstr = 'N/A')
+      order by id;
+eval describe select * from read_csv('$OUT/dialect.csv', delim = '|', quote = '''',
+                                     escape = '\\\\', nullstr = 'N/A');
+
+--echo # the raw text of an exported file, one record per line
+eval copy (select id, name, note from file_sql_copy_src where id <= 3 order by id)
+       to '$OUT/raw.csv' (header true, nullstr 'NULL');
+eval select column0 as line
+       from read_csv('$OUT/raw.csv', header = false, delim = '\\t', quote = '', all_varchar = true);
+
+--echo # COPY a query over a file table; parquet to CSV round trip
+eval copy (select id, flag, s, day, ts, price from read_parquet('$FILE_SQL_EXT_DIR/types.parquet') order by id)
+       to '$OUT/types.csv' (format csv, header);
+eval select id, flag, s, day, ts, price from read_csv('$OUT/types.csv') order by id;
+eval copy (select grp, count(*) as cnt, sum(val) as total
+             from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet') group by grp order by grp)
+       to '$OUT/agg.csv' (header);
+eval select * from read_csv('$OUT/agg.csv') order by grp;
+
+--echo # an empty result writes only the header
+eval copy (select id, name from file_sql_copy_src where id < 0) to '$OUT/empty.csv' (header);
+eval describe select * from read_csv('$OUT/empty.csv', header = true);
+
+--echo # an existing target is never replaced
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1086
+eval copy file_sql_copy_src to '$OUT/plain.csv';
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1086
+eval copy file_sql_copy_src to '$FILE_SQL_EXT_DIR/orders.csv';
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1017
+eval copy file_sql_copy_src to '$OUT/no_such_dir/x.csv';
+
+--echo # a failing query leaves neither the target nor a temporary file
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1136
+eval copy (select * from read_csv('$FILE_SQL_EXT_DIR/bad_rows.csv')) to '$OUT/failed.csv';
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval select substring_index(file, '/', -1) as file from glob('$OUT/*') order by file;
+
+--echo # invalid COPY options
+--error 1235
+eval copy file_sql_copy_src to '$OUT/x.parquet' (format parquet);
+--error 1210
+eval copy file_sql_copy_src to '$OUT/x.csv' (delimiter '||');
+--error 1235
+eval copy file_sql_copy_src to '$OUT/x.csv' (compression 'gzip');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval select substring_index(file, '/', -1) as file from glob('$OUT/*.csv') order by file;
+
+drop table file_sql_copy_src;
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

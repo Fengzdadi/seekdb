@@ -1,0 +1,157 @@
+# owner: database-competition
+# owner group: SQL
+# description: File SQL switch, FILE privilege, secure_file_priv, path escapes and read-only files.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+let $FILE_SQL_HOST = query_get_value('select host_ip()',host_ip(), 1);
+let $ORIG_PRIV = query_get_value(select @@global.secure_file_priv as v, v, 1);
+
+--echo # off by default, for every entry point
+select @@session.enable_file_sql as session_value, @@global.enable_file_sql as global_value;
+--error 1235
+eval select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+--error 1235
+eval select * from read_json('$FILE_SQL_EXT_DIR/customers.jsonl');
+--error 1235
+eval select * from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet');
+--error 1235
+eval select * from glob('$FILE_SQL_EXT_DIR/*');
+--error 1235
+eval describe select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+set session enable_file_sql = ON;
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+
+--echo # reading files needs the FILE privilege
+--disable_warnings
+drop user if exists file_sql_user;
+--enable_warnings
+create user file_sql_user identified by 'file_sql_pwd';
+grant select on test.* to file_sql_user;
+connect (file_sql_user_conn,$OBMYSQL_MS0,file_sql_user,file_sql_pwd,test,$OBMYSQL_PORT);
+connection file_sql_user_conn;
+set session enable_file_sql = ON;
+--error 1227,1045
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+disconnect file_sql_user_conn;
+connection default;
+grant file on *.* to file_sql_user;
+connect (file_sql_user_conn2,$OBMYSQL_MS0,file_sql_user,file_sql_pwd,test,$OBMYSQL_PORT);
+connection file_sql_user_conn2;
+set session enable_file_sql = ON;
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+disconnect file_sql_user_conn2;
+connection default;
+drop user file_sql_user;
+
+--echo # missing files, directories and file types
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1017
+eval select * from read_csv('$FILE_SQL_EXT_DIR/no_such_file.csv');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1017,1235
+eval select * from read_csv('$FILE_SQL_EXT_DIR');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval select count(*) as matches from glob('$FILE_SQL_EXT_DIR/no_such_*.csv');
+
+--echo # file tables are read-only and cannot be stored in views
+--error 1064
+insert into read_csv('orders.csv') values (1, 1, 1, '2026-08-01');
+--error 1064,1235,1288
+eval update read_csv('$FILE_SQL_EXT_DIR/orders.csv') o set o.amount = 0;
+--error 1064,1235,1288
+eval delete from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+--error 1235
+eval create view file_sql_v as select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+eval select count(*), sum(amount) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+
+--echo # file data can be loaded into ordinary tables
+--disable_warnings
+drop table if exists file_sql_orders;
+--enable_warnings
+eval create table file_sql_orders as select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+eval insert into file_sql_orders select * from read_csv('$FILE_SQL_EXT_DIR/orders.csv') where order_id > 1004;
+select count(*), sum(amount) from file_sql_orders;
+drop table file_sql_orders;
+
+--echo # secure_file_priv limits the readable paths. It can only be changed over the unix socket,
+--echo # which mysqltest reaches only without SSL (mysqltest --skip-ssl). These checks print
+--echo # nothing, so the result is the same when the socket is refused and they are skipped.
+--disable_result_log
+--error 0,2026
+connect (file_sql_sock,localhost,root,,test,$OBMYSQL_PORT,$OBSERVER_DIR/run/sql.sock);
+--enable_result_log
+let $FILE_SQL_SOCK_ERRNO = $mysql_errno;
+connection default;
+if (!$FILE_SQL_SOCK_ERRNO)
+{
+  --disable_result_log
+  connection file_sql_sock;
+  eval set global secure_file_priv = '$FILE_SQL_EXT_DIR';
+  connection default;
+  let $FILE_SQL_CNT = query_get_value(select count(*) as c from read_csv('$FILE_SQL_EXT_DIR/orders.csv'), c, 1);
+  if ($FILE_SQL_CNT != 6)
+  {
+    --die a file inside secure_file_priv cannot be read
+  }
+  --error 1227
+  eval select * from read_csv('$FILE_SQL_EXT_DIR/../data_for_mysqltest_file_sql_ext_outside.csv');
+  --error 1227
+  eval select * from read_csv('$FILE_SQL_EXT_DIR/../../../../../../../../etc/hosts.csv');
+  --error 1227
+  eval select * from read_csv('/etc/passwd.csv');
+  --error 1227
+  eval select * from read_json('$FILE_SQL_EXT_DIR/../x.jsonl');
+  --error 1227
+  eval select * from read_parquet('/tmp/../etc/x.parquet');
+
+  # a symbolic link cannot leave the allowed directory
+  let $LINK_CMD = ssh $FILE_SQL_HOST 'mkdir -p "$FILE_SQL_EXT_DIR.outside" && cp "$FILE_SQL_EXT_DIR/orders.csv" "$FILE_SQL_EXT_DIR.outside/secret.csv" && ln -s "$FILE_SQL_EXT_DIR.outside/secret.csv" "$FILE_SQL_EXT_DIR/link.csv" && ln -s "$FILE_SQL_EXT_DIR.outside" "$FILE_SQL_EXT_DIR/linkdir"';
+  exec $LINK_CMD;
+  --error 1227
+  eval select * from read_csv('$FILE_SQL_EXT_DIR/link.csv');
+  --error 1227
+  eval select * from read_csv('$FILE_SQL_EXT_DIR/linkdir/secret.csv');
+  let $FILE_SQL_CNT = query_get_value(select count(*) as c from glob('$FILE_SQL_EXT_DIR/link*'), c, 1);
+  if ($FILE_SQL_CNT != 0)
+  {
+    --die glob lists a symbolic link that leaves secure_file_priv
+  }
+  # glob patterns never contain '..'
+  --error 1210
+  eval select * from glob('$FILE_SQL_EXT_DIR/../*');
+  --error 1227
+  eval select * from glob('/etc/*.conf');
+  --error 1227
+  eval copy (select 1 as a) to '$FILE_SQL_EXT_DIR/../escaped.csv';
+  --error 1227
+  eval copy (select 1 as a) to '$FILE_SQL_EXT_DIR/linkdir/escaped.csv';
+
+  # an empty secure_file_priv disables file access
+  connection file_sql_sock;
+  set global secure_file_priv = '';
+  connection default;
+  --error 1227
+  eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+  --error 1227
+  eval copy (select 1 as a) to '$FILE_SQL_EXT_DIR/denied.csv';
+  connection file_sql_sock;
+  eval set global secure_file_priv = '$ORIG_PRIV';
+  disconnect file_sql_sock;
+  connection default;
+  let $UNLINK_CMD = ssh $FILE_SQL_HOST 'test ! -e "$FILE_SQL_EXT_DIR.outside/escaped.csv" && test ! -e "$FILE_SQL_EXT_DIR/denied.csv" && rm -rf "$FILE_SQL_EXT_DIR.outside" "$FILE_SQL_EXT_DIR/link.csv" "$FILE_SQL_EXT_DIR/linkdir"';
+  exec $UNLINK_CMD;
+  --enable_result_log
+}
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+
+--echo # the switch is per session
+set session enable_file_sql = OFF;
+--error 1235
+eval select count(*) from read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

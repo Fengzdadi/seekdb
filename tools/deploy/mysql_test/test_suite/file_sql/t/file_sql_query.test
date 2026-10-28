@@ -1,0 +1,76 @@
+# owner: database-competition
+# owner group: SQL
+# description: Single-file SQL over file tables: expressions, filters, sorting, grouping, plans.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+let $ORDERS = read_csv('$FILE_SQL_EXT_DIR/orders.csv');
+set session enable_file_sql = ON;
+
+--echo # projection, expressions and aliases
+eval select order_id as id, amount * 2 as twice, round(amount / 3, 2) as third,
+            concat('#', order_id) as label, year(order_day) as y, dayofmonth(order_day) as d,
+            case when amount >= 100 then 'big' when amount >= 50 then 'mid' else 'small' end as size
+       from $ORDERS o
+      order by id;
+eval select read_csv.order_id, read_csv.amount from $ORDERS where read_csv.order_id = 1001;
+
+--echo # WHERE with AND / OR / IN / BETWEEN / LIKE / IS NULL
+eval select order_id from $ORDERS o
+      where (amount between 10 and 100 or customer_id in (4))
+        and order_day >= '2026-08-02'
+      order by order_id;
+eval select order_id from $ORDERS o where customer_id is null;
+eval select order_id from $ORDERS o where cast(order_id as char) like '%3';
+
+--echo # ORDER BY several keys, LIMIT and OFFSET
+eval select order_id, customer_id, amount from $ORDERS o
+      order by customer_id desc, amount limit 3;
+eval select order_id from $ORDERS o order by amount desc limit 2, 2;
+
+--echo # GROUP BY, HAVING and aggregates
+eval select customer_id, count(*) as cnt, sum(amount) as total, avg(amount) as avg_amount,
+            min(order_day) as first_day, max(amount) as top
+       from $ORDERS o
+      group by customer_id
+     having count(*) >= 1 and sum(amount) > 20
+      order by customer_id;
+eval select count(*), count(customer_id), count(distinct customer_id), sum(amount),
+            round(avg(amount), 4), min(amount), max(amount)
+       from $ORDERS o;
+eval select order_day, count(*) as cnt from $ORDERS o group by order_day having cnt > 1
+      order by order_day;
+
+--echo # DISTINCT, window functions, CTE and derived tables
+eval select distinct order_day from $ORDERS o order by order_day;
+eval select order_id, customer_id,
+            row_number() over (partition by customer_id order by amount desc) as rn,
+            sum(amount) over (order by order_id) as running
+       from $ORDERS o
+      order by order_id;
+eval with big as (select * from $ORDERS o where amount > 50)
+     select count(*), sum(amount) from big;
+eval select t.d, t.total from (select order_day as d, sum(amount) as total from $ORDERS o
+                                group by order_day) t
+      where t.total > 50 order by t.d;
+
+--echo # the same query prepared and executed twice
+eval prepare file_sql_stmt from 'select count(*), sum(amount) from read_csv(''$FILE_SQL_EXT_DIR/orders.csv'')';
+execute file_sql_stmt;
+execute file_sql_stmt;
+deallocate prepare file_sql_stmt;
+
+--echo # native plans: filter, group by, sort and limit over FILE TABLE SCAN
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select customer_id, sum(amount) from $ORDERS o
+      where amount > 10 group by customer_id order by 2 desc limit 2;
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select count(*) from $ORDERS o;
+
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc

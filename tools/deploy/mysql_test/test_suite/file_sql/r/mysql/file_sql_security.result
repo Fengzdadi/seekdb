@@ -1,0 +1,36 @@
+# off by default, for every entry point
+session_value	global_value
+0	0
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO
+count(*)
+6
+# reading files needs the FILE privilege
+Got one of the listed errors
+count(*)
+6
+# missing files, directories and file types
+ERROR HY000: File not exist: 'EXT_DIR/no_such_file.csv'
+Got one of the listed errors
+matches
+0
+# file tables are read-only and cannot be stored in views
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near ''orders.csv') values (1, 1, 1, '2026-08-01')' at line 1
+Got one of the listed errors
+Got one of the listed errors
+ERROR 0A000: file table function in view definition not supported
+count(*)	sum(amount)
+6	757.65
+# file data can be loaded into ordinary tables
+count(*)	sum(amount)
+8	852.9
+# secure_file_priv limits the readable paths. It can only be changed over the unix socket,
+# which mysqltest reaches only without SSL (mysqltest --skip-ssl). These checks print
+# nothing, so the result is the same when the socket is refused and they are skipped.
+count(*)
+6
+# the switch is per session
+ERROR 0A000: file sql is disabled, set enable_file_sql = ON to use read_csv/read_json/read_parquet/glob and COPY ... TO

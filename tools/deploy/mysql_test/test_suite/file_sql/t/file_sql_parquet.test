@@ -1,0 +1,84 @@
+# owner: database-competition
+# owner group: SQL
+# description: read_parquet types, row groups, pages, encodings, codecs and column pruning.
+# tags: sql,executor,file_sql
+
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_ext_data.inc
+
+--disable_query_log
+let $FILE_SQL_EXT_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql_ext;
+let $TYPES = read_parquet('$FILE_SQL_EXT_DIR/types.parquet');
+set session enable_file_sql = ON;
+
+--echo # footer schema of every supported type (3 row groups, v1 pages, SNAPPY)
+eval describe select * from $TYPES;
+eval select id, flag, small, u32, f, d, s, day from $TYPES t order by id;
+eval select id, ts, ts_ms, price, fdec, i96, bin from $TYPES t order by id;
+eval select count(*), count(flag), sum(flag), count(s), count(distinct s), min(day), max(day),
+            min(ts), max(ts), sum(price), min(d), max(d), round(sum(if(abs(d) < 1e10, d, 0)), 3)
+       from $TYPES t;
+
+--echo # filters, grouping and ordering over parquet columns
+eval select s, count(*) as cnt, sum(small) as small_sum
+       from $TYPES t
+      where s is not null
+      group by s
+      order by cnt desc, s
+      limit 3;
+eval select id from $TYPES t where flag and day > '2000-01-01' order by id;
+
+--echo # data page v2, GZIP, run length encoded booleans and dictionary strings
+eval describe select * from read_parquet('$FILE_SQL_EXT_DIR/v2_gzip.parquet');
+eval select k, b, tag, v from read_parquet('$FILE_SQL_EXT_DIR/v2_gzip.parquet') order by k;
+
+--echo # data page v2 with ZSTD and three pages in one column chunk
+eval select count(*), count(name), count(distinct name), sum(b), min(k), max(k), sum(k)
+       from read_parquet('$FILE_SQL_EXT_DIR/v2_zstd.parquet');
+eval select k, name, b from read_parquet('$FILE_SQL_EXT_DIR/v2_zstd.parquet')
+      where k in (1, 7, 8, 100) order by k;
+
+--echo # PLAIN_DICTIONARY pages, an uncompressed file and a one entry dictionary
+eval select city, pop, country from parquet_scan('$FILE_SQL_EXT_DIR/plain_dict.parquet') p
+      order by city, pop;
+
+--echo # 3000 rows in 3 row groups of 4 pages, read in batches
+eval select count(*), count(val), sum(id), sum(grp), count(distinct name), sum(val)
+       from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet');
+eval select grp, count(*) as cnt, round(avg(val), 3) as avg_val
+       from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet')
+      where id > 100
+      group by grp
+      having count(*) > 400
+      order by grp;
+eval select id, name, val from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet') w
+      where id in (1, 10, 999, 1000, 1001, 2000, 2001, 3000)
+      order by id;
+eval select id, name from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet')
+      order by val desc, id limit 2 offset 1;
+
+--echo # only the referenced columns are read
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select id from $TYPES t where flag;
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+eval explain basic select count(*) from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet');
+
+--echo # unsupported and corrupt files
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval select * from read_parquet('$FILE_SQL_EXT_DIR/nested.parquet');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 4070
+eval select * from read_parquet('$FILE_SQL_EXT_DIR/truncated.parquet');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 4070
+eval select * from read_parquet('$FILE_SQL_EXT_DIR/not_parquet.parquet');
+--replace_result $FILE_SQL_EXT_DIR EXT_DIR
+--error 1235
+eval select * from read_parquet('$FILE_SQL_EXT_DIR/orders.csv');
+--error 1235
+eval select * from read_parquet('$FILE_SQL_EXT_DIR/wide.parquet', header = true);
+
+set session enable_file_sql = OFF;
+--enable_query_log
+
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_ext_data.inc
