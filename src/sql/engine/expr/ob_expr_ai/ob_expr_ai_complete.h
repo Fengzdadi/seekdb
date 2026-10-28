@@ -42,6 +42,12 @@ public:
                       ObExpr &rt_expr) const override;
   virtual bool need_rt_ctx() const override { return true; }
 private:
+  // read the prompt as plain text, a prompt object from ai_prompt is rendered
+  static int get_prompt(const ObExpr &expr, ObEvalCtx &ctx, MultimodeAlloctor &allocator,
+                        ObDatum &prompt_datum, common::ObString &prompt);
+  // config is a json object or json text, NULL or missing config means the default config
+  static int get_config(const ObExpr &expr, ObEvalCtx &ctx, MultimodeAlloctor &allocator,
+                        common::ObJsonObject *&config);
   static constexpr int MODEL_IDX = 0;
   static constexpr int PROMPT_IDX = 1;
   static constexpr int CONFIG_IDX = 2;

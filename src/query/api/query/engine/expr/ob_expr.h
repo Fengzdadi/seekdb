@@ -330,6 +330,9 @@ typedef common::ObFixedArray<common::ObString, common::ObIAllocator> ObStrValues
 
 // default evaluate batch function which call eval() for every datum of batch.
 extern int expr_default_eval_batch_func(BATCH_EVAL_FUNC_ARG_DECL);
+// same as expr_default_eval_batch_func, but evaluates the args in batch first, so that an arg
+// which handles a whole batch at once (e.g. ai_embed) is not called row by row.
+extern int expr_batch_args_eval_batch_func(BATCH_EVAL_FUNC_ARG_DECL);
 
 // index number for args_ in ObExpr
 extern const int64_t ARGS_IDX_ZERO;

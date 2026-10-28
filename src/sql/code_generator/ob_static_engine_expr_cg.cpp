@@ -226,6 +226,7 @@ int ObStaticEngineExprCG::cg_exprs(const ObIArray<ObRawExpr *> &raw_exprs,
     } else if (OB_FAIL(cg_expr_basic_funcs(raw_exprs))) {
     } else if (OB_FAIL(cg_expr_by_operator(raw_exprs, expr_info.need_ctx_cnt_))) {
     } else if (OB_FAIL(cg_expr_parents(raw_exprs))) {
+    } else if (OB_FAIL(cg_batch_eval_args(raw_exprs))) {
     } else if (OB_FAIL(cg_all_frame_layout(raw_exprs, expr_info))) {
     } else if (OB_FAIL(alloc_so_check_exprs(raw_exprs, expr_info))) {
     }
@@ -407,6 +408,42 @@ int ObStaticEngineExprCG::cg_expr_parents(const ObIArray<ObRawExpr *> &raw_exprs
     }
   }
 
+  return ret;
+}
+
+// ai_embed sends the rows of a batch in a few http requests, which needs it to be evaluated in
+// batch. A parent with the default batch func calls its args row by row, so such parents (and
+// their parents in turn) evaluate the args in batch first. Parents that evaluate only some args
+// for some rows (case, ifnull ...) are kept as they are.
+int ObStaticEngineExprCG::cg_batch_eval_args(const ObIArray<ObRawExpr *> &raw_exprs)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObExpr *, 8> exprs;
+  for (int64_t i = 0; OB_SUCC(ret) && batch_size_ > 0 && i < raw_exprs.count(); i++) {
+    ObExpr *rt_expr = get_rt_expr(*raw_exprs.at(i));
+    if (T_FUN_SYS_AI_EMBED == rt_expr->type_ && OB_FAIL(exprs.push_back(rt_expr))) {
+    }
+  }
+  while (OB_SUCC(ret) && !exprs.empty()) {
+    ObExpr *expr = NULL;
+    if (OB_FAIL(exprs.pop_back(expr))) {
+    }
+    for (uint32_t i = 0; OB_SUCC(ret) && i < expr->parent_cnt_; i++) {
+      ObExpr *parent = expr->parents_[i];
+      if (OB_ISNULL(parent)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (parent->eval_batch_func_ != &expr_default_eval_batch_func
+                 || T_OP_CASE == parent->type_ || T_OP_ARG_CASE == parent->type_
+                 || T_FUN_SYS_IF == parent->type_ || T_FUN_SYS_IFNULL == parent->type_
+                 || T_FUN_SYS_NVL == parent->type_ || T_FUN_SYS_COALESCE == parent->type_
+                 || T_FUN_SYS_ELT == parent->type_ || T_FUN_SYS_DECODE == parent->type_
+                 || T_OP_AND == parent->type_ || T_OP_OR == parent->type_) {
+        // evaluates args in batch itself, or not all args for every row
+      } else if (OB_FALSE_IT(parent->eval_batch_func_ = &expr_batch_args_eval_batch_func)) {
+      } else if (OB_FAIL(exprs.push_back(parent))) {
+      }
+    }
+  }
   return ret;
 }
 

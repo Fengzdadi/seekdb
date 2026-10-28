@@ -760,6 +760,23 @@ int expr_default_eval_batch_func(const ObExpr &expr,
   return expr_default_eval_batch_func(expr, ctx, skip, EvalBound(size));
 }
 
+int expr_batch_args_eval_batch_func(const ObExpr &expr,
+                                    ObEvalCtx &ctx,
+                                    const ObBitVector &skip,
+                                    const int64_t size)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < expr.arg_cnt_; i++) {
+    if (OB_FAIL(expr.args_[i]->eval_batch(ctx, skip, size))) {
+      SQL_LOG(WARN, "failed to eval args in batch", K(ret), K(i));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ret = expr_default_eval_batch_func(expr, ctx, skip, EvalBound(size));
+  }
+  return ret;
+}
+
 int eval_question_mark_func(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
 {
   int ret = OB_SUCCESS;

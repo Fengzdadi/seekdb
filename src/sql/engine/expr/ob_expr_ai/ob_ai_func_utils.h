@@ -85,8 +85,10 @@ public:
   class ObOllamaComplete : public ObAIFuncIComplete 
   {
   public:
-    ObOllamaComplete() {}
+    ObOllamaComplete() : use_chat_api_(false) {}
     virtual ~ObOllamaComplete() {}
+    // /api/generate is used by default, /api/chat when the endpoint url points to it
+    void set_use_chat_api(const bool use_chat_api) { use_chat_api_ = use_chat_api; }
     virtual int get_header(common::ObIAllocator &allocator,
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
@@ -101,14 +103,18 @@ public:
                              common::ObIJsonBase *&result) override;
     virtual int set_config_json_format(common::ObIAllocator &allocator, common::ObJsonObject *config) override;
   private:
+    bool use_chat_api_;
     DISALLOW_COPY_AND_ASSIGN(ObOllamaComplete);
   };
 
   class ObOllamaEmbed : public ObAIFuncIEmbed 
   {
   public:
-    ObOllamaEmbed() {}
+    ObOllamaEmbed() : use_legacy_api_(false) {}
     virtual ~ObOllamaEmbed() {}
+    // /api/embed is used by default, the legacy /api/embeddings takes a single "prompt"
+    void set_use_legacy_api(const bool use_legacy_api) { use_legacy_api_ = use_legacy_api; }
+    bool use_legacy_api() const { return use_legacy_api_; }
     virtual int get_header(common::ObIAllocator &allocator,
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
@@ -121,9 +127,14 @@ public:
                              common::ObJsonObject *http_response,
                              common::ObIJsonBase *&result) override;
   private:
+    bool use_legacy_api_;
     DISALLOW_COPY_AND_ASSIGN(ObOllamaEmbed);
   };
   static int get_header(common::ObIAllocator &allocator, common::ObArray<ObString> &headers);
+  static bool is_chat_api(const common::ObString &url);
+  static bool is_legacy_embed_api(const common::ObString &url);
+  // move sampling parameters of the config into the native "options" object
+  static int add_config_to_body(common::ObIAllocator &allocator, common::ObJsonObject *config, common::ObJsonObject *body);
   DISALLOW_COPY_AND_ASSIGN(ObOllamaUtils);
 };
 
@@ -245,6 +256,18 @@ public:
   static int get_json_object_form_str(ObIAllocator &allocator, ObString &str, ObJsonObject *&obj_node);
   static int print_json_to_str(ObIAllocator &allocator, ObIJsonBase *base_node, ObString &str);
   static int compact_json_object(ObIAllocator &allocator, ObJsonObject *obj_node, ObJsonObject *compact_obj);
+  static bool is_json_number(const ObIJsonBase *node);
+  static int get_json_integer(const ObIJsonBase *node, int64_t &value);
+  static int get_json_number(const ObIJsonBase *node, double &value);
+  // check that embedding is a non-empty array of numbers, dimension is set to its length
+  static int check_embedding_array(const ObIJsonBase *embedding, int64_t &dimension);
+  // collect items[i][embedding_key] into result ordered by items[i][index_key] (when present),
+  // indexes must be unique and in [0, item count), all embeddings must share one dimension
+  static int collect_embeddings_by_index(ObIAllocator &allocator, ObJsonArray *items,
+                                         const char *index_key, const char *embedding_key,
+                                         ObJsonArray *&result);
+  // check that every element is a valid embedding with the same dimension
+  static int check_embedding_list(ObJsonArray *embeddings);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncJsonUtils);
 };
@@ -291,6 +314,17 @@ public:
   static int get_complete_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIComplete *&complete_provider);
   static int get_embed_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIEmbed *&embed_provider);
   static int get_rerank_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIRerank *&rerank_provider);
+  // same as above, and adapt the provider to the protocol selected by the endpoint url
+  static int get_complete_provider(ObIAllocator &allocator, const share::ObAiModelEndpointInfo &endpoint_info,
+                                   ObAIFuncIComplete *&complete_provider);
+  static int get_embed_provider(ObIAllocator &allocator, const share::ObAiModelEndpointInfo &endpoint_info,
+                                ObAIFuncIEmbed *&embed_provider);
+  // max number of inputs carried by one embedding request of the endpoint
+  static int64_t get_embed_max_batch_size(const share::ObAiModelEndpointInfo &endpoint_info);
+  // check the rerank result of one request carrying doc_count documents
+  static int check_rerank_results(ObJsonArray *results, const int64_t doc_count);
+  // check the common sampling options of a completion config, NULL config is valid
+  static int check_completion_config(ObJsonObject *config);
   static int get_header(ObIAllocator &allocator,
                         const ObAIFuncExprInfo &info,
                         const share::ObAiModelEndpointInfo &endpoint_info,
@@ -337,6 +371,7 @@ public:
   static int get_ai_func_info(ObIAllocator &allocator, const ObString &model_id,
                               share::schema::ObSchemaGetterGuard &guard, ObAIFuncExprInfo *&info);
   static int get_ai_func_info(ObIAllocator &allocator, const ObString &model_id, ObAIFuncExprInfo *&info);
+  static const int64_t DEFAULT_EMBED_BATCH_SIZE = 10;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncUtils);
 };
@@ -358,6 +393,8 @@ public:
    int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);
    int call_dense_embedding_vector(ObArray<ObString> &contents, ObJsonObject *config, ObArray<ObString> &results);
    int call_dense_embedding_vector_v2(ObArray<ObString> &contents, ObJsonObject *config, ObArray<ObString> &results);
+   // split contents into requests of at most get_embed_max_batch_size() inputs, results keep the input order
+   int call_dense_embedding_batch(ObArray<ObString> &contents, ObJsonObject *config, ObArray<ObString> &results);
    // rerank
    int call_rerank(ObString &query, ObJsonArray *contents, ObJsonArray *&results);
  private:
@@ -365,6 +402,10 @@ public:
    bool is_dense_embedding_type() {return info_.type_ == share::EndpointType::DENSE_EMBEDDING;}
    bool is_rerank_type() {return info_.type_ == share::EndpointType::RERANK;}
    const ObString get_request_model_name();
+   int call_dense_embedding_request(ObAIFuncIEmbed *embed_provider, ObArray<ObString> &headers,
+                                    ObString &request_model_name, ObArray<ObString> &contents,
+                                    ObJsonObject *config, const int64_t dimension, ObArray<ObString> &results);
+   void forward_invalid_response_error(const int ret, ObJsonObject *response);
    ObIAllocator *allocator_;
    const ObAIFuncExprInfo &info_;
    const share::ObAiModelEndpointInfo &endpoint_info_;
@@ -379,9 +420,16 @@ public:
   static bool is_valid_prompt_object(ObJsonObject* prompt_object);
   static int replace_all_str_args_in_template(ObIAllocator &allocator, ObJsonObject* prompt_object, ObString& replaced_prompt_str);
   static int construct_prompt_object(ObIAllocator &allocator, ObString &template_str, ObJsonArray *args_array, ObJsonObject *&prompt_object);
+  // render a prompt given as json: a string is used as is, a prompt object is rendered
+  static int render_prompt(ObIAllocator &allocator, ObIJsonBase *prompt, ObString &prompt_str);
   static constexpr char prompt_template_key[20] = "template";
   static constexpr char prompt_args_key[20] = "args";
+  static const int64_t MAX_PROMPT_NESTED_DEPTH = 64;
 private:
+  static int render_prompt_object(ObIAllocator &allocator, ObJsonObject *prompt_object,
+                                  const int64_t depth, ObStringBuffer &result);
+  static int render_prompt_arg(ObIAllocator &allocator, ObJsonNode *arg_node,
+                               const int64_t depth, ObString &arg_str);
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncPromptObjectUtils);
 };
 
