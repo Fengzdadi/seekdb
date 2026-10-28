@@ -371,14 +371,167 @@ struct ObDatumCollectionCmp : public ObDefined<>
 ///////////////////////////////////////////////////////////////////////////////
 
 
+// utf8mb4_general_ci charset info and the sort weights of its ASCII characters, resolved once
+// so that hot comparisons skip the argument checks and charset lookup of ObCharset::strcmpsp.
+struct Utf8mb4GeneralCiCmpCtx
+{
+  Utf8mb4GeneralCiCmpCtx();
+  static const Utf8mb4GeneralCiCmpCtx &get_instance()
+  {
+    static Utf8mb4GeneralCiCmpCtx ctx;
+    return ctx;
+  }
+  // Decodes a character of at most 3 bytes like ob_mb_wc_utf8mb4 and gets its sort weight like
+  // ob_tosort_unicode. Returns false for longer characters and invalid or truncated sequences.
+  OB_INLINE bool get_bmp_weight(const unsigned char *s, const uint32_t len,
+                                uint32_t &weight, uint32_t &char_len) const
+  {
+    bool valid = true;
+    uint32_t wc = 0;
+    const unsigned char c = s[0];
+    if (c < 0x80) {
+      weight = ascii_weight_[c];
+      char_len = 1;
+    } else if (c < 0xc2 || c >= 0xf0) {
+      valid = false;
+    } else if (c < 0xe0) {
+      if (len < 2 || (s[1] >> 6) != 0x02) {
+        valid = false;
+      } else {
+        wc = ((c & 0x1f) << 6) | (s[1] ^ 0x80);
+        char_len = 2;
+      }
+    } else if (len < 3 || (s[1] >> 6) != 0x02 || (s[2] >> 6) != 0x02 || (c < 0xe1 && s[1] < 0xa0)) {
+      valid = false;
+    } else {
+      wc = ((c & 0x0f) << 12) | ((s[1] ^ 0x80) << 6) | (s[2] ^ 0x80);
+      char_len = 3;
+    }
+    if (valid && c >= 0x80) {
+      if (wc > maxchar_) {
+        weight = OB_CS_REPLACEMENT_CHARACTER;
+      } else {
+        const ObUnicaseInfoChar *page = uni_plane_->page[wc >> 8];
+        weight = OB_ISNULL(page) ? wc : (lower_sort_ ? page[wc & 0xFF].tolower : page[wc & 0xFF].sort);
+      }
+    }
+    return valid;
+  }
+  const ObCharsetInfo *cs_;
+  const ObUnicaseInfo *uni_plane_;
+  ob_wc_t maxchar_;
+  bool lower_sort_;
+  uint32_t ascii_weight_[128];
+};
+
 struct ObDatumStrCmpImpl
 {
   static int OB_INLINE cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret,
                            const ObCollationType cs, const bool with_end_space)
   {
-    cmp_ret = ObCharset::strcmpsp(cs, l.ptr_, l.len_, r.ptr_, r.len_, with_end_space);
+    if (OB_UNLIKELY((nullptr == l.ptr_ && 0 != l.len_) || (nullptr == r.ptr_ && 0 != r.len_))) {
+      // let ObCharset report the invalid argument
+      cmp_ret = ObCharset::strcmpsp(cs, l.ptr_, l.len_, r.ptr_, r.len_, with_end_space);
+    } else if (CS_TYPE_BINARY == cs) {
+      cmp_ret = binary_cmp(l, r);
+    } else if (CS_TYPE_UTF8MB4_GENERAL_CI == cs) {
+      cmp_ret = utf8mb4_general_ci_cmp(l, r, with_end_space);
+    } else {
+      cmp_ret = ObCharset::strcmpsp(cs, l.ptr_, l.len_, r.ptr_, r.len_, with_end_space);
+    }
     cmp_ret = cmp_ret > 0 ? 1 : (cmp_ret < 0 ? -1 : 0);
     return OB_SUCCESS;
+  }
+
+private:
+  // Unaligned load of 8 bytes as a big endian integer, so that integer order is memcmp order.
+  static OB_INLINE uint64_t load_be64(const char *p)
+  {
+    uint64_t v = 0;
+    __builtin_memcpy(&v, p, sizeof(v));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    v = __builtin_bswap64(v);
+#endif
+    return v;
+  }
+
+  // same sign as memcmp, compares short strings without a library call
+  static OB_INLINE int bytes_cmp(const char *l, const char *r, const uint32_t len)
+  {
+    int res = 0;
+    uint32_t pos = 0;
+    for (; 0 == res && pos + sizeof(uint64_t) <= len; pos += sizeof(uint64_t)) {
+      const uint64_t lv = load_be64(l + pos);
+      const uint64_t rv = load_be64(r + pos);
+      if (lv != rv) {
+        res = lv < rv ? -1 : 1;
+      }
+    }
+    for (; 0 == res && pos < len; ++pos) {
+      const unsigned char lc = static_cast<unsigned char>(l[pos]);
+      const unsigned char rc = static_cast<unsigned char>(r[pos]);
+      if (lc != rc) {
+        res = lc < rc ? -1 : 1;
+      }
+    }
+    return res;
+  }
+
+  // same result as ob_strnncollsp_binary
+  static int OB_INLINE binary_cmp(const ObDatum &l, const ObDatum &r)
+  {
+    const uint32_t min_len = l.len_ < r.len_ ? l.len_ : r.len_;
+    int res = bytes_cmp(l.ptr_, r.ptr_, min_len);
+    if (0 == res) {
+      res = static_cast<int>(static_cast<size_t>(l.len_) - static_cast<size_t>(r.len_));
+    }
+    return res;
+  }
+
+  // Same result as ob_strnncollsp_utf8mb4. That function compares character by character and
+  // its result only depends on the remaining suffixes, so leading characters of at most 3 bytes
+  // are compared here and the rest is handed to it.
+  static int OB_INLINE utf8mb4_general_ci_cmp(const ObDatum &l, const ObDatum &r,
+                                              const bool with_end_space)
+  {
+    int res = 0;
+    const Utf8mb4GeneralCiCmpCtx &ctx = Utf8mb4GeneralCiCmpCtx::get_instance();
+    if (OB_ISNULL(ctx.cs_)) {
+      res = ObCharset::strcmpsp(CS_TYPE_UTF8MB4_GENERAL_CI, l.ptr_, l.len_, r.ptr_, r.len_,
+                                with_end_space);
+    } else if (l.len_ == r.len_ && 0 == bytes_cmp(l.ptr_, r.ptr_, l.len_)) {
+      // identical bytes compare equal, including invalid sequences (compared as binary)
+      res = 0;
+    } else {
+      const unsigned char *s = reinterpret_cast<const unsigned char *>(l.ptr_);
+      const unsigned char *t = reinterpret_cast<const unsigned char *>(r.ptr_);
+      const uint32_t s_len = l.len_;
+      const uint32_t t_len = r.len_;
+      uint32_t s_pos = 0;
+      uint32_t t_pos = 0;
+      bool decided = false;
+      while (!decided && s_pos < s_len && t_pos < t_len) {
+        uint32_t s_weight = 0;
+        uint32_t t_weight = 0;
+        uint32_t s_char_len = 0;
+        uint32_t t_char_len = 0;
+        if (!ctx.get_bmp_weight(s + s_pos, s_len - s_pos, s_weight, s_char_len)
+            || !ctx.get_bmp_weight(t + t_pos, t_len - t_pos, t_weight, t_char_len)) {
+          break;
+        } else if (s_weight != t_weight) {
+          res = s_weight > t_weight ? 1 : -1;
+          decided = true;
+        } else {
+          s_pos += s_char_len;
+          t_pos += t_char_len;
+        }
+      }
+      if (!decided) {
+        res = ctx.cs_->coll->strnncollsp(ctx.cs_, s + s_pos, s_len - s_pos, t + t_pos,
+                                         t_len - t_pos, with_end_space);
+      }
+    }
+    return res;
   }
 };
 

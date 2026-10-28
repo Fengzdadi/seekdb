@@ -1,0 +1,142 @@
+drop database if exists inmem_sort_order;
+create database inmem_sort_order;
+use inmem_sort_order;
+result_format: 4
+create table seq (i int primary key);
+insert into seq values (0);
+insert into seq select i + 1 from seq;
+insert into seq select i + 2 from seq;
+insert into seq select i + 4 from seq;
+insert into seq select i + 8 from seq;
+insert into seq select i + 16 from seq;
+insert into seq select i + 32 from seq;
+insert into seq select i + 64 from seq;
+insert into seq select i + 128 from seq;
+insert into seq select i + 256 from seq;
+insert into seq select i + 512 from seq;
+insert into seq select i + 1024 from seq;
+insert into seq select i + 2048 from seq;
+
+create table t (id int primary key,
+                w varchar(32) collate utf8mb4_general_ci,
+                wn varchar(32) collate utf8mb4_general_ci,
+                wu varchar(32) collate utf8mb4_general_ci,
+                b varbinary(16),
+                bv varbinary(16),
+                n int);
+insert into t
+select i,
+       elt(1 + (i * 7) % 16, 'abc', 'ABC', 'abc ', 'Äbc', 'abd', '全文', '全文索引', '', 'zz', 'Zz ',
+           'straße', 'e', 'é', '😀', '😁', 'a😀'),
+       case when i % 11 = 0 then null else elt(1 + (i * 5) % 6, 'x', 'X', 'y', 'x ', '索引', 'Y') end,
+       concat('u', lpad((i * 7919) % 4096, 5, '0')),
+       unhex(concat('0102030405060708', lpad(hex((i * 37) % 997), 6, '0'), '0000000000')),
+       unhex(lpad(hex((i * 13) % 251), 2 * (1 + i % 4), '0')),
+       (i * 13) % 50
+from seq;
+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17163138041 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w desc) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17109538157 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, b) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17203766322 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w desc, b) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17196369727 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by b, w desc) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17234826092 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by b desc) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17142099313 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by bv, w) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17186701068 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, n) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17192501572 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by wn, w) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17186954671 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, wn desc) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17194893981 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by wu) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17553074176 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, wu) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17238682496 |
++----------+--------------------+
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by n, w) rn from t) x;
++----------+--------------------+
+| count(*) | sum(rn * (id + 1)) |
++----------+--------------------+
+|     4096 |        17195262785 |
++----------+--------------------+
+
+select w, count(*), min(id), max(id) from t group by w order by w, min(id);
++--------------+----------+---------+---------+
+| w            | count(*) | min(id) | max(id) |
++--------------+----------+---------+---------+
+|              |      256 |       1 |    4081 |
+| abc          |     1024 |       0 |    4094 |
+| abd          |      256 |      12 |    4092 |
+| a😀            |      256 |       9 |    4089 |
+| é            |      512 |       4 |    4093 |
+| straße       |      256 |       6 |    4086 |
+| zz           |      512 |       8 |    4095 |
+| 全文         |      256 |       3 |    4083 |
+| 全文索引     |      256 |      10 |    4090 |
+| 😁             |      512 |       2 |    4091 |
++--------------+----------+---------+---------+
+select wn, count(*) from t group by wn order by wn, count(*);
++--------+----------+
+| wn     | count(*) |
++--------+----------+
+| NULL   |      373 |
+| x      |     1861 |
+| Y      |     1241 |
+| 索引   |      621 |
++--------+----------+
+
+drop database inmem_sort_order;

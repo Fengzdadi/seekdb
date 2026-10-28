@@ -39,7 +39,7 @@ public:
                 ObFTCacheRangeContainer *range_container,
                 const ObFTDictDesc &desc)
       : is_inited_(false), desc_(desc), range_alloc_(lib::ObMemAttr("Range Dict")),
-        range_dicts_(&range_alloc_), range_container_(range_container)
+        range_dicts_(&range_alloc_), range_container_(range_container), ranges_sorted_(false)
   {
   }
   ~ObFTRangeDict() override{};
@@ -95,6 +95,7 @@ private:
     }
     range_dicts_.reset();
     range_alloc_.reset();
+    ranges_sorted_ = false;
   }
 
   int find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const;
@@ -106,6 +107,8 @@ private:
   ObArenaAllocator range_alloc_;
   ObVector<ObFTRange, ObArenaAllocator> range_dicts_;
   ObFTCacheRangeContainer *range_container_; // only used to read cache
+  // starts and ends of the ranges are both ascending, so a range can be found by binary search
+  bool ranges_sorted_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTRangeDict);

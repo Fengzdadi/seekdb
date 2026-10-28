@@ -1,0 +1,233 @@
+# owner: storage
+# owner group: storage
+# description: TOKENIZE output and MATCH hits, order and relevance on Chinese, English and
+#              mixed text, after an index build and after DML
+
+--disable_warnings
+drop database if exists fts_stability;
+create database fts_stability;
+use fts_stability;
+set ob_query_timeout = 10000000000;
+--enable_warnings
+
+--result_format 4
+
+# TOKENIZE on varied input and parser settings
+
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'ik');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'ik', '[{"output":"all"}]');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'beng');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'space');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('OceanBase是一款非常稳定的数据库，全文索引的分词器热路径优化包括解析器实例复用、停用词全局单例、内存池化数据结构等技术，在大量文档索引和查询场景下可以显著降低 CPU 开销。', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'ik');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'ik', '[{"output":"all"}]');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'beng');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'space');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('The quick brown fox jumps over the lazy dog. Full-text search indexing requires efficient tokenization on the hot path.', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'ik');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'ik', '[{"output":"all"}]');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'beng');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'space');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('我们在2024年10月28日买了三千五百个苹果，花费12.5万元，约合1.7万美元，第3季度增长15%。', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'ik');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'ik', '[{"output":"all"}]');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'beng');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'space');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('中华人民共和国成立于一九四九年，首都北京，上海、广州、深圳是重要城市。', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'ik');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'ik', '[{"output":"all"}]');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'beng');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'space');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('数据库系统的倒排索引（Inverted Index）支持BM25相关性排序和Top-K查询，tokenizer会把文本切分成词。', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'ik');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'ik', '[{"output":"all"}]');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'beng');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'space');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('HELLO World! This IS a Test of UPPER and lower CASE, with the stop words: a an the of in on at.', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'ik');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'ik', '[{"output":"all"}]');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'beng');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'space');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('e-mail: test.user@example.com, url https://www.oceanbase.com/docs?id=42&lang=zh-CN hash_tag', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'ik');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'ik', '[{"output":"all"}]');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'beng');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'space');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('全角字符ＡＢＣ１２３，以及emoji😀🚀和汉字混排𠀀𠀁，还有日本語のテキストと한국어 텍스트。', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'ik');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'ik', '[{"output":"all"}]');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'beng');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'space');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('Crème brûlée, naïve café, Ärger, STRASSE und Straße, ΑΒΓ αβγ, ДОМ дом.', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'ik');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'ik', '[{"output":"all"}]');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'beng');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'space');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('C++ and C# are languages, node.js, x86_64, ARMv8-a, 3.14159 and 1e-10 are tokens too.', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'ik');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'ik', '[{"output":"all"}]');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'beng');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'space');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('数据库数据库数据库 database database DATABASE 數據庫 分词器分词器全文索引全文索引倒排索引', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'ik');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'ik', '[{"output":"all"}]');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'beng');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'space');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('二〇二四年 两千零二十四 壹佰贰拾叁 卅 廿 兆 億 萬 第一 第十二章 三点五', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('   leading and trailing spaces   ', 'ik');
+select tokenize('   leading and trailing spaces   ', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('   leading and trailing spaces   ', 'ik', '[{"output":"all"}]');
+select tokenize('   leading and trailing spaces   ', 'beng');
+select tokenize('   leading and trailing spaces   ', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('   leading and trailing spaces   ', 'space');
+select tokenize('   leading and trailing spaces   ', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('   leading and trailing spaces   ', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+select tokenize('的', 'ik');
+select tokenize('的', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('的', 'ik', '[{"output":"all"}]');
+select tokenize('的', 'beng');
+select tokenize('的', 'beng', '[{"output":"all"}, {"additional_args":[{"min_token_size":1},{"max_token_size":10}]}]');
+select tokenize('的', 'space');
+select tokenize('的', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
+select tokenize('的', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
+
+# MATCH over indexes built after the data is loaded and maintained by DML
+
+create table docs (id int primary key, category int, title varchar(200), content text,
+                   title_en varchar(200), content_en text);
+insert into docs values
+  (1, 1, '全文索引入门', '全文索引通过分词器把文本切分成词，再建立倒排索引。', 'Full-text index basics', 'A full-text index splits text into tokens and builds an inverted index.'),
+  (2, 2, '分词器原理', 'IK分词器使用词典和最大匹配算法，支持智能模式和最细粒度模式。', 'Tokenizer internals', 'The tokenizer uses a dictionary and maximum matching.'),
+  (3, 3, '数据库性能', 'OceanBase是一款非常稳定的数据库，查询性能优化依赖索引和统计信息。', 'Database performance', 'Database performance depends on indexes, statistics and a stable query plan.'),
+  (4, 1, '倒排索引', '倒排索引记录每个词出现的文档，tokenizer的输出决定索引内容。', 'Inverted index', 'An inverted index maps each token to the documents that contain it.'),
+  (5, 2, '相关性排序', 'BM25根据词频、文档长度和逆文档频率计算相关性。', 'Relevance ranking', 'BM25 ranks documents by term frequency, document length and inverse document frequency.'),
+  (6, 3, '审计日志', '数据库审计记录每一次查询，用于安全分析。', 'Audit log', 'The database audit records every query for security analysis and performance audit.'),
+  (7, 1, '稳定性', 'OceanBase 稳定 运行 database 集群，全文索引 分词器 稳定。', 'Stability', 'OceanBase keeps the database cluster stable under heavy load.'),
+  (8, 2, '混合文本', 'Mixed 中英文 text：数据库database、索引index、查询query。', 'Mixed text', 'Mixed Chinese and English text about database index query.'),
+  (9, 3, '数字和量词', '二〇二四年处理了三千五百万条记录，第一季度增长百分之十五。', 'Numbers', 'In 2024 the cluster processed 35 million records, 15 percent more.'),
+  (10, 1, '重复词', '分词器分词器分词器全文索引全文索引倒排索引', 'Repeated words', 'database database database performance performance audit'),
+  (11, 2, '空内容', '', 'Empty', ''),
+  (12, 3, '大小写', 'DATABASE Database database 数据库', 'Case', 'DATABASE Database database Performance PERFORMANCE');
+create fulltext index fti_all_ik on docs(title, content) with parser ik;
+create fulltext index fti_content_ik on docs(content) with parser ik;
+create fulltext index fti_en_beng on docs(title_en, content_en) with parser beng;
+insert into docs values
+  (13, 1, '新增文档', '在建好全文索引之后插入的文档也要能被分词器和倒排索引检索到。', 'Late insert', 'A document inserted after the index build is searchable with the tokenizer.'),
+  (14, 2, '更新前', '更新之前的内容', 'Before update', 'content before the update');
+update docs set content = '更新之后的全文索引内容，数据库 稳定', content_en = 'updated database content about performance' where id = 14;
+delete from docs where id = 11;
+
+select count(*) from docs where MATCH(title, content) AGAINST('全文索引 分词器');
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器');
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器') order by score desc, id;
+select count(*) from (select id from docs where MATCH(title, content) AGAINST('全文索引 分词器') limit 3) t;
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器') and category = 1;
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器') > 0.2;
+select id from docs order by MATCH(title, content) AGAINST('全文索引 分词器') desc, id limit 5;
+
+select count(*) from docs where MATCH(title_en, content_en) AGAINST('database performance audit');
+select id, round(MATCH(title_en, content_en) AGAINST('database performance audit'), 6) as score from docs where MATCH(title_en, content_en) AGAINST('database performance audit');
+select id, round(MATCH(title_en, content_en) AGAINST('database performance audit'), 6) as score from docs where MATCH(title_en, content_en) AGAINST('database performance audit') order by score desc, id;
+select count(*) from (select id from docs where MATCH(title_en, content_en) AGAINST('database performance audit') limit 3) t;
+select id, round(MATCH(title_en, content_en) AGAINST('database performance audit'), 6) as score from docs where MATCH(title_en, content_en) AGAINST('database performance audit') and category = 1;
+select id, round(MATCH(title_en, content_en) AGAINST('database performance audit'), 6) as score from docs where MATCH(title_en, content_en) AGAINST('database performance audit') > 0.2;
+select id from docs order by MATCH(title_en, content_en) AGAINST('database performance audit') desc, id limit 5;
+
+select count(*) from docs where MATCH(title, content) AGAINST('OceanBase 稳定 database');
+select id, round(MATCH(title, content) AGAINST('OceanBase 稳定 database'), 6) as score from docs where MATCH(title, content) AGAINST('OceanBase 稳定 database');
+select id, round(MATCH(title, content) AGAINST('OceanBase 稳定 database'), 6) as score from docs where MATCH(title, content) AGAINST('OceanBase 稳定 database') order by score desc, id;
+select count(*) from (select id from docs where MATCH(title, content) AGAINST('OceanBase 稳定 database') limit 3) t;
+select id, round(MATCH(title, content) AGAINST('OceanBase 稳定 database'), 6) as score from docs where MATCH(title, content) AGAINST('OceanBase 稳定 database') and category = 1;
+select id, round(MATCH(title, content) AGAINST('OceanBase 稳定 database'), 6) as score from docs where MATCH(title, content) AGAINST('OceanBase 稳定 database') > 0.2;
+select id from docs order by MATCH(title, content) AGAINST('OceanBase 稳定 database') desc, id limit 5;
+
+select count(*) from docs where MATCH(content) AGAINST('倒排索引 tokenizer');
+select id, round(MATCH(content) AGAINST('倒排索引 tokenizer'), 6) as score from docs where MATCH(content) AGAINST('倒排索引 tokenizer');
+select id, round(MATCH(content) AGAINST('倒排索引 tokenizer'), 6) as score from docs where MATCH(content) AGAINST('倒排索引 tokenizer') order by score desc, id;
+select count(*) from (select id from docs where MATCH(content) AGAINST('倒排索引 tokenizer') limit 3) t;
+select id, round(MATCH(content) AGAINST('倒排索引 tokenizer'), 6) as score from docs where MATCH(content) AGAINST('倒排索引 tokenizer') and category = 1;
+select id, round(MATCH(content) AGAINST('倒排索引 tokenizer'), 6) as score from docs where MATCH(content) AGAINST('倒排索引 tokenizer') > 0.2;
+select id from docs order by MATCH(content) AGAINST('倒排索引 tokenizer') desc, id limit 5;
+
+select count(*) from docs where MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典');
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典');
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典') order by score desc, id;
+select count(*) from (select id from docs where MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典') limit 3) t;
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典') and category = 1;
+select id, round(MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典'), 6) as score from docs where MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典') > 0.2;
+select id from docs order by MATCH(title, content) AGAINST('全文索引 分词器 稳定 倒排 索引 数据库 性能 优化 查询 文档 词典') desc, id limit 5;
+
+select count(*) from docs where MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE);
+select id, round(MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE), 6) as score from docs where MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE);
+select id, round(MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE), 6) as score from docs where MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE) order by score desc, id;
+select count(*) from (select id from docs where MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE) limit 3) t;
+select id, round(MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE), 6) as score from docs where MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE) and category = 1;
+select id, round(MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE), 6) as score from docs where MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE) > 0.2;
+select id from docs order by MATCH(title, content) AGAINST('+全文索引 -分词器' IN BOOLEAN MODE) desc, id limit 5;
+
+select count(*) from docs where MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE);
+select id, round(MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE), 6) as score from docs where MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE);
+select id, round(MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE), 6) as score from docs where MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE) order by score desc, id;
+select count(*) from (select id from docs where MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE) limit 3) t;
+select id, round(MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE), 6) as score from docs where MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE) and category = 1;
+select id, round(MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE), 6) as score from docs where MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE) > 0.2;
+select id from docs order by MATCH(title_en, content_en) AGAINST('+database performance -audit' IN BOOLEAN MODE) desc, id limit 5;
+
+select count(*) from docs where MATCH(title, content) AGAINST('不存在的词语');
+select id, round(MATCH(title, content) AGAINST('不存在的词语'), 6) as score from docs where MATCH(title, content) AGAINST('不存在的词语');
+select id, round(MATCH(title, content) AGAINST('不存在的词语'), 6) as score from docs where MATCH(title, content) AGAINST('不存在的词语') order by score desc, id;
+select count(*) from (select id from docs where MATCH(title, content) AGAINST('不存在的词语') limit 3) t;
+select id, round(MATCH(title, content) AGAINST('不存在的词语'), 6) as score from docs where MATCH(title, content) AGAINST('不存在的词语') and category = 1;
+select id, round(MATCH(title, content) AGAINST('不存在的词语'), 6) as score from docs where MATCH(title, content) AGAINST('不存在的词语') > 0.2;
+select id from docs order by MATCH(title, content) AGAINST('不存在的词语') desc, id limit 5;
+
+drop database fts_stability;

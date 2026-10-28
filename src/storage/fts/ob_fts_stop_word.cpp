@@ -110,6 +110,28 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
 
 ////////////////////////////////////////////////////////////////////////////////
 // class ObAddWord
+namespace
+{
+// Counts a word that is already in the word map. Like overwriting the entry with set_refactored(),
+// it also stores the bytes of the new word, which can differ from the stored ones when the
+// collation ignores case or accents.
+class GroupbyWordUpdater final
+{
+public:
+  GroupbyWordUpdater(const ObFTWord &word, const int64_t word_freq)
+    : word_(word), word_freq_(word_freq)
+  {}
+  void operator()(common::hash::HashMapPair<ObFTWord, int64_t> &entry)
+  {
+    entry.first = word_;
+    entry.second += word_freq_;
+  }
+private:
+  const ObFTWord &word_;
+  const int64_t word_freq_;
+};
+} // namespace
+
 ObAddWord::ObAddWord(
     const ObFTParserProperty &property,
     const ObObjMeta &meta,
@@ -198,20 +220,15 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
-    } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+    // a new word is counted as 1, a known word adds word_freq
+    GroupbyWordUpdater updater(word, word_freq);
+    if (OB_FAIL(word_map_.set_or_update(word, 1/*word count*/, updater))) {
     }
   }
   return ret;

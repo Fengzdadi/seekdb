@@ -21,12 +21,490 @@
 #include "query/engine/basic/ob_encoded_sort_row.h"
 #include "data_plane/encoding/ob_cpu_features.h"
 #include "sql/engine/px/p2p_datahub/ob_pushdown_topn_filter_msg.h"
+#include "share/datum/ob_datum_cmp_func_def.h"
+#include "lib/hash_func/murmur_hash.h"
 
 namespace oceanbase
 {
 using namespace common;
 namespace sql
 {
+
+namespace
+{
+// In-memory sort on integer keys of the leading sort columns.
+//
+// The key part of a value of a sort column is an integer that orders like the value in the sort
+// order of the column, so equal key parts mean equal values. The key parts of the leading sort
+// columns are packed into one key. For two rows with different keys, ObSortOpImpl::Compare finds
+// the columns before the first different key part equal and decides on that column as the keys
+// do, and rows with the same key are compared by Compare. So every comparison has the same result
+// as with Compare alone, std::sort makes the same moves and the rows end up in the same order,
+// while most comparisons do not read the rows.
+//
+// The key part of a value is its rank among the distinct values of the column, or for binary
+// strings of the same length, the bytes in which they differ.
+
+struct KeySortItem
+{
+  uint64_t key_;
+  ObChunkDatumStore::StoredRow *row_;
+};
+
+enum class KeySortColType
+{
+  NONE,
+  UTF8MB4_GENERAL_CI,
+  BINARY,
+};
+
+const int64_t KEY_SORT_MIN_ROW_CNT = 1024;
+const int64_t KEY_SORT_MAX_COL_CNT = 2;
+// a column is not ranked if it has more distinct values than the rows divided by this
+const int64_t KEY_SORT_MAX_DISTINCT_DIV = 4;
+const int64_t KEY_SORT_MAX_BYTES_LEN = 8;
+
+bool is_varchar_cmp_func(const ObDatumCmpFuncType cmp_func, const ObCollationType cs_type)
+{
+  return cmp_func == ObDatumFuncs::get_nullsafe_cmp_func(ObVarcharType, ObVarcharType, NULL_FIRST,
+                                                         cs_type, SCALE_UNKNOWN_YET, false)
+         || cmp_func == ObDatumFuncs::get_nullsafe_cmp_func(ObVarcharType, ObVarcharType, NULL_LAST,
+                                                            cs_type, SCALE_UNKNOWN_YET, false);
+}
+
+KeySortColType get_key_sort_col_type(const ObSortFieldCollation &collation,
+                                     const ObDatumCmpFuncType cmp_func)
+{
+  KeySortColType type = KeySortColType::NONE;
+  if (CS_TYPE_UTF8MB4_GENERAL_CI == collation.cs_type_
+      && OB_NOT_NULL(datum_cmp::Utf8mb4GeneralCiCmpCtx::get_instance().cs_)
+      && is_varchar_cmp_func(cmp_func, CS_TYPE_UTF8MB4_GENERAL_CI)) {
+    type = KeySortColType::UTF8MB4_GENERAL_CI;
+  } else if (CS_TYPE_BINARY == collation.cs_type_ && is_varchar_cmp_func(cmp_func, CS_TYPE_BINARY)) {
+    type = KeySortColType::BINARY;
+  }
+  return type;
+}
+
+// Hash of the sort weights of a utf8mb4_general_ci string. Strings that compare equal get the
+// same hash, except some with characters of 4 bytes or invalid sequences, see
+// SortColumnRanker::rank().
+uint64_t general_ci_sort_hash(const ObDatum &datum, const datum_cmp::Utf8mb4GeneralCiCmpCtx &ctx)
+{
+  const unsigned char *str = reinterpret_cast<const unsigned char *>(datum.ptr_);
+  uint32_t len = datum.len_;
+  // strings that differ in trailing spaces can compare equal
+  while (len > 0 && ' ' == str[len - 1]) {
+    --len;
+  }
+  uint64_t hash = 0xcbf29ce484222325ULL;
+  uint32_t pos = 0;
+  uint32_t weight = 0;
+  uint32_t char_len = 0;
+  while (pos < len && ctx.get_bmp_weight(str + pos, len - pos, weight, char_len)) {
+    hash = (hash ^ weight) * 0x100000001b3ULL;
+    pos += char_len;
+  }
+  hash ^= hash >> 33;
+  hash *= 0xff51afd7ed558ccdULL;
+  hash ^= hash >> 33;
+  return hash;
+}
+
+OB_INLINE uint64_t append_key_part(const uint64_t key, const int64_t part_bits, const uint64_t part)
+{
+  return part_bits >= 64 ? part : ((key << part_bits) | part);
+}
+
+// Finds the distinct values of a sort column with a hash table and ranks them.
+class SortColumnRanker
+{
+public:
+  SortColumnRanker()
+    : allocator_(nullptr), cmp_func_(nullptr), access_ctx_(nullptr), buckets_(nullptr),
+      bucket_cnt_(0), values_(nullptr), hashes_(nullptr), ranks_(nullptr), value_cnt_(0)
+  {}
+  ~SortColumnRanker() { reset(); }
+  void init(ObIAllocator &allocator,
+            const ObDatumCmpFuncType cmp_func,
+            const ObDatumAccessContext *access_ctx)
+  {
+    reset();
+    allocator_ = &allocator;
+    cmp_func_ = cmp_func;
+    access_ctx_ = access_ctx;
+  }
+  void reset()
+  {
+    if (OB_NOT_NULL(allocator_)) {
+      free_array(buckets_);
+      free_array(values_);
+      free_array(hashes_);
+      free_array(ranks_);
+    }
+    bucket_cnt_ = 0;
+    value_cnt_ = 0;
+  }
+  // Gets the id of the distinct value equal to the datum, adding the datum if there is none.
+  int add(const ObDatum &datum, const uint64_t hash, uint32_t &value_id)
+  {
+    int ret = OB_SUCCESS;
+    if (value_cnt_ * 2 >= bucket_cnt_ && OB_FAIL(expand())) {
+    } else {
+      const uint64_t mask = static_cast<uint64_t>(bucket_cnt_ - 1);
+      uint64_t idx = hash & mask;
+      bool found = false;
+      while (OB_SUCC(ret) && !found && 0 != buckets_[idx]) {
+        const uint32_t id = buckets_[idx] - 1;
+        int cmp_ret = 1;
+        if (hashes_[id] == hash && OB_FAIL(cmp_func_(*values_[id], datum, cmp_ret, access_ctx_))) {
+        } else if (0 == cmp_ret) {
+          found = true;
+          value_id = id;
+        } else {
+          idx = (idx + 1) & mask;
+        }
+      }
+      if (OB_SUCC(ret) && !found) {
+        value_id = static_cast<uint32_t>(value_cnt_);
+        values_[value_cnt_] = &datum;
+        hashes_[value_cnt_] = hash;
+        buckets_[idx] = value_id + 1;
+        ++value_cnt_;
+      }
+    }
+    return ret;
+  }
+  // Ranks the distinct values in the sort order of the column. is_valid is false if two of them
+  // compare equal, which happens if equal values got different hashes.
+  int rank(const bool is_ascending, bool &is_valid)
+  {
+    int ret = OB_SUCCESS;
+    uint32_t *order = nullptr;
+    is_valid = false;
+    if (OB_ISNULL(ranks_ = alloc_array<uint32_t>(MAX(value_cnt_, 1)))
+        || OB_ISNULL(order = alloc_array<uint32_t>(MAX(value_cnt_, 1)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      for (int64_t i = 0; i < value_cnt_; ++i) {
+        order[i] = static_cast<uint32_t>(i);
+      }
+      lib::ob_sort(order, order + value_cnt_, ValueLess(*this, ret));
+      is_valid = OB_SUCC(ret);
+      // the values are distinct if each one compares less than the next one
+      for (int64_t i = 1; OB_SUCC(ret) && is_valid && i < value_cnt_; ++i) {
+        int cmp_ret = 0;
+        if (OB_FAIL(cmp_func_(*values_[order[i - 1]], *values_[order[i]], cmp_ret, access_ctx_))) {
+        } else {
+          is_valid = cmp_ret < 0;
+        }
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && is_valid && i < value_cnt_; ++i) {
+        ranks_[order[i]] = static_cast<uint32_t>(is_ascending ? i : value_cnt_ - 1 - i);
+      }
+    }
+    free_array(order);
+    return ret;
+  }
+  int64_t get_value_cnt() const { return value_cnt_; }
+  uint64_t get_rank(const uint32_t value_id) const { return ranks_[value_id]; }
+private:
+  static const int64_t INIT_BUCKET_CNT = 1024;
+  class ValueLess
+  {
+  public:
+    ValueLess(const SortColumnRanker &ranker, int &ret) : ranker_(ranker), ret_(ret) {}
+    bool operator()(const uint32_t l, const uint32_t r) const
+    {
+      bool less = false;
+      int cmp_ret = 0;
+      if (OB_SUCCESS != ret_) {
+        // keeps a strict weak ordering after an error
+        less = l < r;
+      } else if (OB_SUCCESS != (ret_ = ranker_.cmp_func_(*ranker_.values_[l], *ranker_.values_[r],
+                                                         cmp_ret, ranker_.access_ctx_))) {
+        less = l < r;
+      } else {
+        less = cmp_ret < 0;
+      }
+      return less;
+    }
+  private:
+    const SortColumnRanker &ranker_;
+    int &ret_;
+  };
+  template <typename T>
+  T *alloc_array(const int64_t cnt)
+  {
+    return static_cast<T *>(allocator_->alloc(sizeof(T) * cnt));
+  }
+  template <typename T>
+  void free_array(T *&array)
+  {
+    if (OB_NOT_NULL(array)) {
+      allocator_->free(const_cast<void *>(static_cast<const void *>(array)));
+      array = nullptr;
+    }
+  }
+  int expand()
+  {
+    int ret = OB_SUCCESS;
+    const int64_t bucket_cnt = 0 == bucket_cnt_ ? INIT_BUCKET_CNT : bucket_cnt_ * 2;
+    const int64_t value_cap = bucket_cnt / 2;
+    uint32_t *buckets = alloc_array<uint32_t>(bucket_cnt);
+    const ObDatum **values = alloc_array<const ObDatum *>(value_cap);
+    uint64_t *hashes = alloc_array<uint64_t>(value_cap);
+    if (OB_ISNULL(buckets) || OB_ISNULL(values) || OB_ISNULL(hashes)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      free_array(buckets);
+      free_array(values);
+      free_array(hashes);
+    } else {
+      MEMSET(buckets, 0, sizeof(uint32_t) * bucket_cnt);
+      const uint64_t mask = static_cast<uint64_t>(bucket_cnt - 1);
+      for (int64_t i = 0; i < value_cnt_; ++i) {
+        uint64_t idx = hashes_[i] & mask;
+        while (0 != buckets[idx]) {
+          idx = (idx + 1) & mask;
+        }
+        buckets[idx] = static_cast<uint32_t>(i + 1);
+        values[i] = values_[i];
+        hashes[i] = hashes_[i];
+      }
+      free_array(buckets_);
+      free_array(values_);
+      free_array(hashes_);
+      buckets_ = buckets;
+      values_ = values;
+      hashes_ = hashes;
+      bucket_cnt_ = bucket_cnt;
+    }
+    return ret;
+  }
+private:
+  ObIAllocator *allocator_;
+  ObDatumCmpFuncType cmp_func_;
+  const ObDatumAccessContext *access_ctx_;
+  uint32_t *buckets_; // value id + 1, 0 for an empty bucket
+  int64_t bucket_cnt_;
+  const ObDatum **values_;
+  uint64_t *hashes_;
+  uint32_t *ranks_;
+  int64_t value_cnt_;
+  DISALLOW_COPY_AND_ASSIGN(SortColumnRanker);
+};
+
+// For binary strings of the same length, finds the bytes in which they differ: the bytes after
+// the prefix and before the suffix that all of them share. bytes_len is -1 if the lengths differ.
+void get_differing_bytes(ObChunkDatumStore::StoredRow *const *rows,
+                         const int64_t row_cnt,
+                         const int64_t field_idx,
+                         bool &has_null,
+                         int64_t &bytes_offset,
+                         int64_t &bytes_len)
+{
+  const ObDatum &first = rows[0]->cells()[field_idx];
+  has_null = first.is_null();
+  bytes_len = -1;
+  if (!has_null) {
+    const int64_t str_len = first.len_;
+    int64_t prefix_len = str_len;
+    int64_t suffix_len = str_len;
+    bool same_len = true;
+    for (int64_t i = 1; !has_null && same_len && i < row_cnt; ++i) {
+      const ObDatum &datum = rows[i]->cells()[field_idx];
+      if (datum.is_null()) {
+        has_null = true;
+      } else if (datum.len_ != str_len) {
+        same_len = false;
+      } else {
+        int64_t pos = 0;
+        while (pos < prefix_len && first.ptr_[pos] == datum.ptr_[pos]) {
+          ++pos;
+        }
+        prefix_len = pos;
+        pos = 0;
+        while (pos < suffix_len && first.ptr_[str_len - 1 - pos] == datum.ptr_[str_len - 1 - pos]) {
+          ++pos;
+        }
+        suffix_len = pos;
+      }
+    }
+    if (!has_null && same_len) {
+      suffix_len = MIN(suffix_len, str_len - prefix_len);
+      bytes_offset = prefix_len;
+      bytes_len = str_len - prefix_len - suffix_len;
+    }
+  }
+}
+
+// Appends the key part of a sort column to the keys. added is false if the column has no key
+// parts or they do not fit in the keys, and then the keys are not changed.
+template <typename Compare>
+int add_key_part(ObChunkDatumStore::StoredRow *const *rows,
+                 const int64_t row_cnt,
+                 const Compare &compare,
+                 const int64_t col_idx,
+                 const KeySortColType col_type,
+                 ObIAllocator &allocator,
+                 KeySortItem *items,
+                 int64_t &key_bits,
+                 bool &added)
+{
+  int ret = OB_SUCCESS;
+  const ObSortFieldCollation &collation = compare.sort_collations_->at(col_idx);
+  const int64_t field_idx = collation.field_idx_;
+  bool has_null = false;
+  int64_t bytes_offset = 0;
+  int64_t bytes_len = -1;
+  added = false;
+  if (KeySortColType::BINARY == col_type) {
+    get_differing_bytes(rows, row_cnt, field_idx, has_null, bytes_offset, bytes_len);
+  }
+  if (has_null) {
+  } else if (bytes_len >= 0 && bytes_len <= KEY_SORT_MAX_BYTES_LEN) {
+    // big endian integers of the differing bytes order like the strings
+    const int64_t part_bits = bytes_len * 8;
+    if (key_bits + part_bits <= 64) {
+      const uint64_t part_max = part_bits >= 64 ? UINT64_MAX : (1ULL << part_bits) - 1;
+      for (int64_t i = 0; i < row_cnt; ++i) {
+        const unsigned char *str =
+            reinterpret_cast<const unsigned char *>(rows[i]->cells()[field_idx].ptr_) + bytes_offset;
+        uint64_t part = 0;
+        for (int64_t j = 0; j < bytes_len; ++j) {
+          part = (part << 8) | str[j];
+        }
+        if (!collation.is_ascending_) {
+          part = part_max - part;
+        }
+        items[i].key_ = append_key_part(items[i].key_, part_bits, part);
+      }
+      key_bits += part_bits;
+      added = true;
+    }
+  } else {
+    const datum_cmp::Utf8mb4GeneralCiCmpCtx &general_ci_ctx =
+        datum_cmp::Utf8mb4GeneralCiCmpCtx::get_instance();
+    const int64_t max_value_cnt = row_cnt / KEY_SORT_MAX_DISTINCT_DIV;
+    SortColumnRanker ranker;
+    ranker.init(allocator, compare.sort_cmp_funs_->at(col_idx).cmp_func_, compare.access_ctx_);
+    uint32_t *value_ids = static_cast<uint32_t *>(allocator.alloc(sizeof(uint32_t) * row_cnt));
+    bool can_rank = OB_NOT_NULL(value_ids);
+    for (int64_t i = 0; OB_SUCC(ret) && can_rank && i < row_cnt; ++i) {
+      const ObDatum &datum = rows[i]->cells()[field_idx];
+      if (datum.is_null()) {
+        can_rank = false;
+      } else if (OB_FAIL(ranker.add(datum,
+                                    KeySortColType::UTF8MB4_GENERAL_CI == col_type
+                                    ? general_ci_sort_hash(datum, general_ci_ctx)
+                                    : murmurhash(datum.ptr_, datum.len_, 0),
+                                    value_ids[i]))) {
+      } else if (ranker.get_value_cnt() > max_value_cnt) {
+        can_rank = false;
+      }
+    }
+    bool is_valid = false;
+    if (OB_FAIL(ret) || !can_rank) {
+    } else if (OB_FAIL(ranker.rank(collation.is_ascending_, is_valid))) {
+    } else if (is_valid) {
+      const int64_t value_cnt = ranker.get_value_cnt();
+      const int64_t part_bits = value_cnt > 1 ? 64 - __builtin_clzll(value_cnt - 1) : 0;
+      if (key_bits + part_bits <= 64) {
+        for (int64_t i = 0; i < row_cnt; ++i) {
+          items[i].key_ = append_key_part(items[i].key_, part_bits, ranker.get_rank(value_ids[i]));
+        }
+        key_bits += part_bits;
+        added = true;
+      }
+    }
+    if (OB_NOT_NULL(value_ids)) {
+      allocator.free(value_ids);
+    }
+  }
+  return ret;
+}
+
+template <typename Compare>
+class KeySortComparer
+{
+public:
+  explicit KeySortComparer(Compare &compare) : compare_(compare) {}
+  bool operator()(const KeySortItem &l, const KeySortItem &r)
+  {
+    bool less = false;
+    if (l.key_ == r.key_ || OB_UNLIKELY(OB_SUCCESS != compare_.ret_)) {
+      less = compare_(l.row_, r.row_);
+    } else {
+      int ret = OB_SUCCESS;
+      // checks the status like Compare does in every comparison
+      if (OB_FAIL(compare_.fast_check_status())) {
+        compare_.ret_ = ret;
+        less = l.row_ < r.row_;
+      } else {
+        less = l.key_ < r.key_;
+      }
+    }
+    return less;
+  }
+private:
+  Compare &compare_;
+};
+
+// Sorts the rows on keys of their leading sort columns. Returns false if the rows are left for
+// the caller to sort.
+template <typename Compare>
+bool key_sort_rows(ObChunkDatumStore::StoredRow **rows,
+                   const int64_t row_cnt,
+                   Compare &compare,
+                   ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  bool sorted = false;
+  KeySortColType col_types[KEY_SORT_MAX_COL_CNT];
+  int64_t col_cnt = 0;
+  if (row_cnt < KEY_SORT_MIN_ROW_CNT || row_cnt > UINT32_MAX || !compare.is_inited()
+      || compare.enable_encode_sortkey_ || 0 != compare.cmp_start_ || OB_SUCCESS != compare.ret_) {
+  } else {
+    const int64_t max_col_cnt = MIN(MIN(compare.cmp_end_, KEY_SORT_MAX_COL_CNT),
+        MIN(compare.sort_collations_->count(), compare.sort_cmp_funs_->count()));
+    for (; col_cnt < max_col_cnt; ++col_cnt) {
+      col_types[col_cnt] = get_key_sort_col_type(compare.sort_collations_->at(col_cnt),
+                                                 compare.sort_cmp_funs_->at(col_cnt).cmp_func_);
+      if (KeySortColType::NONE == col_types[col_cnt]) {
+        break;
+      }
+    }
+  }
+  KeySortItem *items = nullptr;
+  if (col_cnt > 0
+      && OB_NOT_NULL(items = static_cast<KeySortItem *>(allocator.alloc(sizeof(KeySortItem) * row_cnt)))) {
+    bool added = true;
+    for (int64_t i = 0; i < row_cnt; ++i) {
+      items[i].key_ = 0;
+      items[i].row_ = rows[i];
+      added = added && OB_NOT_NULL(rows[i]);
+    }
+    int64_t key_bits = 0;
+    int64_t key_col_cnt = 0;
+    for (int64_t i = 0; OB_SUCC(ret) && added && i < col_cnt; ++i) {
+      if (OB_FAIL(add_key_part(rows, row_cnt, compare, i, col_types[i], allocator, items, key_bits,
+                               added))) {
+      } else if (added) {
+        ++key_col_cnt;
+      }
+    }
+    if (OB_SUCC(ret) && key_col_cnt > 0) {
+      lib::ob_sort(items, items + row_cnt, KeySortComparer<Compare>(compare));
+      for (int64_t i = 0; i < row_cnt; ++i) {
+        rows[i] = items[i].row_;
+      }
+      sorted = true;
+    }
+    allocator.free(items);
+  }
+  return sorted;
+}
+} // namespace
 
 /************************************* start ObSortOpImpl *********************************/
 ObSortOpImpl::ObAdaptiveQS::ObAdaptiveQS(common::ObIArray<ObChunkDatumStore::StoredRow *> &sort_rows,
@@ -416,12 +894,15 @@ bool ObSortOpImpl::Compare::operator()(
   } else {
     const ObDatum *lcells = l->cells();
     const ObDatum *rcells = r->cells();
+    // [cmp_start_, cmp_end_) is within both arrays, see init() and set_cmp_range()
+    const ObSortFieldCollation *sort_collations = sort_collations_->get_data();
+    const ObSortCmpFunc *sort_cmp_funs = sort_cmp_funs_->get_data();
     int cmp = 0;
     for (int64_t i = cmp_start_; 0 == cmp && i < cmp_end_ && OB_SUCC(ret); i++) {
-      const ObSortFieldCollation& sort_collation = sort_collations_->at(i);
+      const ObSortFieldCollation& sort_collation = sort_collations[i];
       const int64_t idx = sort_collation.field_idx_;
       if (OB_FAIL(
-              sort_cmp_funs_->at(i).cmp_func_(lcells[idx], rcells[idx], cmp, access_ctx_))) {
+              sort_cmp_funs[i].cmp_func_(lcells[idx], rcells[idx], cmp, access_ctx_))) {
       } else if (cmp < 0) {
         less = sort_collation.is_ascending_;
       } else if (cmp > 0) {
@@ -1861,7 +2342,8 @@ int ObSortOpImpl::sort_inmem_data()
           comp_.enable_encode_sortkey_ = false;
           lib::ob_sort(&rows_->at(begin), &rows_->at(0) + rows_->count(), CopyableComparer(comp_));
         }
-      } else {
+      } else if (!key_sort_rows(&rows_->at(begin), rows_->count() - begin, comp_,
+                                mem_context_->get_malloc_allocator())) {
         lib::ob_sort(&rows_->at(begin), &rows_->at(0) + rows_->count(), CopyableComparer(comp_));
       }
       if (OB_SUCCESS != comp_.ret_) {

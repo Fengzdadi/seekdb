@@ -142,6 +142,11 @@ public:
     }
     return ret;
   }
+  // Current row after a successful get_next_row(), for merge loops that skip the checks of
+  // get_curr_score() and get_curr_id(). curr_relevance() is only valid when has_relevance().
+  OB_INLINE bool has_relevance() const { return nullptr != relevance_expr_; }
+  OB_INLINE double curr_relevance() const { return relevance_.get_data()[cur_idx_]; }
+  OB_INLINE const ObDatum &curr_id() const { return doc_id_.get_data()[cur_idx_].get_datum(); }
 private:
   int save_relevances_and_docids();
   int save_docids();

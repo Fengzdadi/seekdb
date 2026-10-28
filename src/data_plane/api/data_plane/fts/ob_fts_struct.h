@@ -51,7 +51,16 @@ private:
   ObObjMeta meta_;
 };
 
-typedef common::hash::ObHashMap<ObFTWord, int64_t> ObFTWordMap;
+// Word maps are local to one parse and never shared between threads, so they skip locking.
+// The locking mode does not change the bucket layout, so words iterate in the same order.
+typedef common::hash::HashMapTypes<ObFTWord, int64_t>::AllocType ObFTWordMapNode;
+typedef common::hash::ObHashMap<ObFTWord, int64_t,
+                                common::hash::NoPthreadDefendMode,
+                                common::hash::hash_func<ObFTWord>,
+                                common::hash::equal_to<ObFTWord>,
+                                common::hash::SimpleAllocer<ObFTWordMapNode,
+                                    common::hash::NodeNumTraits<ObFTWordMapNode>::NODE_NUM,
+                                    common::hash::NoPthreadDefendMode>> ObFTWordMap;
 
 class ObAddWordFlag final
 {

@@ -55,19 +55,52 @@ public:
   ObTextDaaTIter() : ObSRDaaTIterImpl(),
       bm25_param_estimator_(),
       mode_flag_(sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE),
-      function_lookup_mode_(false) {}
+      function_lookup_mode_(false),
+      use_linear_merge_(false),
+      id_cmp_func_(nullptr),
+      token_iters_(nullptr),
+      dim_relevances_(nullptr),
+      active_dims_(nullptr),
+      active_dim_cnt_(0),
+      use_batch_filter_(false),
+      batch_capacity_(0),
+      filter_skip_(nullptr) {}
   virtual ~ObTextDaaTIter() { reset(); }
 
   int init(const ObTextDaaTParam &param);
+  virtual int get_next_rows(const int64_t capacity, int64_t &count) override;
   virtual void reuse(const bool switch_tablet = false) override;
   virtual void reset() override;
 protected:
   virtual int pre_process() override;
+  virtual int do_one_merge_round(int64_t &count) override;
+  virtual int fill_merge_heap() override;
+  virtual int collect_dims_by_id(const ObDatum *&id_datum, double &relevance, bool &got_valid_id) override;
+private:
+  int init_linear_merge();
+  void reuse_linear_merge();
+  int init_batch_filter();
+  int filter_buffered_rows(const int64_t begin, const int64_t end, int64_t &new_end);
 protected:
   ObBM25ParamEstimator bm25_param_estimator_;
   sql::ObMatchAgainstMode mode_flag_;
   bool function_lookup_mode_;
 private:
+  // With a few query tokens, dims are merged by scanning the current doc id of every unfinished
+  // dim instead of maintaining the merge heap. Documents and the dims of each document are
+  // visited in the same order as the heap pops them: by doc id, then by dim index.
+  static const int64_t LINEAR_MERGE_MAX_DIM_CNT = 8;
+  bool use_linear_merge_;
+  common::ObDatumCmpFuncType id_cmp_func_;
+  ObTextRetrievalDaaTTokenIter **token_iters_;
+  double *dim_relevances_;
+  int64_t *active_dims_; // ascending indexes of the dims not iterated to the end
+  int64_t active_dim_cnt_;
+  // Without a limit, rows are buffered up to the batch capacity before the score filter is
+  // evaluated on all of them at once, instead of evaluating it row by row.
+  bool use_batch_filter_;
+  int64_t batch_capacity_; // capacity of the running get_next_rows()
+  sql::ObBitVector *filter_skip_;
   DISALLOW_COPY_AND_ASSIGN(ObTextDaaTIter);
 };
 

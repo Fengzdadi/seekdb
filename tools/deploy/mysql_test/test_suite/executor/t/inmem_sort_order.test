@@ -1,0 +1,72 @@
+# owner: sql
+# owner group: sql
+# description: order of in-memory sorts on utf8mb4_general_ci and binary leading sort keys,
+#              including the order of rows with equal sort keys, null and descending keys,
+#              and keys with many distinct values
+
+--disable_warnings
+drop database if exists inmem_sort_order;
+create database inmem_sort_order;
+use inmem_sort_order;
+--enable_warnings
+
+--result_format 4
+
+create table seq (i int primary key);
+insert into seq values (0);
+insert into seq select i + 1 from seq;
+insert into seq select i + 2 from seq;
+insert into seq select i + 4 from seq;
+insert into seq select i + 8 from seq;
+insert into seq select i + 16 from seq;
+insert into seq select i + 32 from seq;
+insert into seq select i + 64 from seq;
+insert into seq select i + 128 from seq;
+insert into seq select i + 256 from seq;
+insert into seq select i + 512 from seq;
+insert into seq select i + 1024 from seq;
+insert into seq select i + 2048 from seq;
+
+# w: few distinct values that differ in case, accents, trailing spaces and 4-byte characters
+# wn: like w, with nulls
+# wu: one distinct value per row
+# b: binary strings of the same length that share a prefix and a suffix
+# bv: binary strings of different lengths
+create table t (id int primary key,
+                w varchar(32) collate utf8mb4_general_ci,
+                wn varchar(32) collate utf8mb4_general_ci,
+                wu varchar(32) collate utf8mb4_general_ci,
+                b varbinary(16),
+                bv varbinary(16),
+                n int);
+insert into t
+select i,
+       elt(1 + (i * 7) % 16, 'abc', 'ABC', 'abc ', 'Äbc', 'abd', '全文', '全文索引', '', 'zz', 'Zz ',
+           'straße', 'e', 'é', '😀', '😁', 'a😀'),
+       case when i % 11 = 0 then null else elt(1 + (i * 5) % 6, 'x', 'X', 'y', 'x ', '索引', 'Y') end,
+       concat('u', lpad((i * 7919) % 4096, 5, '0')),
+       unhex(concat('0102030405060708', lpad(hex((i * 37) % 997), 6, '0'), '0000000000')),
+       unhex(lpad(hex((i * 13) % 251), 2 * (1 + i % 4), '0')),
+       (i * 13) % 50
+from seq;
+
+# The row numbers of rows with equal sort keys follow the order of the sort, so the sums show
+# the order of all rows.
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w desc) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, b) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w desc, b) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by b, w desc) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by b desc) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by bv, w) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, n) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by wn, w) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, wn desc) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by wu) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by w, wu) rn from t) x;
+select count(*), sum(rn * (id + 1)) from (select id, row_number() over (order by n, w) rn from t) x;
+
+select w, count(*), min(id), max(id) from t group by w order by w, min(id);
+select wn, count(*) from t group by wn order by wn, count(*);
+
+drop database inmem_sort_order;

@@ -60,8 +60,13 @@ private:
   bool keep_single() const { return true; }
 
 private:
+  typedef hash::HashMapTypes<int64_t, ObIKTokenChain *>::AllocType ChainMapNode;
   ObArenaAllocator alloc_;
-  hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // used by one thread only
+  hash::ObHashMap<int64_t, ObIKTokenChain *, hash::NoPthreadDefendMode,
+                  hash::hash_func<int64_t>, hash::equal_to<int64_t>,
+                  hash::SimpleAllocer<ChainMapNode, hash::NodeNumTraits<ChainMapNode>::NODE_NUM,
+                                      hash::NoPthreadDefendMode>> chains_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);

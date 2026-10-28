@@ -44,6 +44,37 @@ namespace oceanbase
 namespace storage
 {
 
+// Same sign as ObCharset::strcmp(CS_TYPE_UTF8MB4_BIN, l, r): utf8mb4_bin compares the bytes
+// and then the lengths, empty strings sort first.
+static inline int utf8mb4_bin_strcmp(const char *l, const int64_t l_len,
+                                     const char *r, const int64_t r_len)
+{
+  int res = 0;
+  if (OB_ISNULL(l) || 0 == l_len) {
+    res = (OB_ISNULL(r) || 0 == r_len) ? 0 : -1;
+  } else if (OB_ISNULL(r) || 0 == r_len) {
+    res = 1;
+  } else {
+    // the words are single characters, too short for a memcmp call to pay off
+    const int64_t min_len = MIN(l_len, r_len);
+    for (int64_t i = 0; 0 == res && i < min_len; ++i) {
+      const unsigned char lc = static_cast<unsigned char>(l[i]);
+      const unsigned char rc = static_cast<unsigned char>(r[i]);
+      if (lc != rc) {
+        res = lc < rc ? -1 : 1;
+      }
+    }
+    if (0 == res) {
+      res = static_cast<int>(static_cast<size_t>(l_len) - static_cast<size_t>(r_len));
+    }
+  }
+  return res;
+}
+
+static inline int single_word_cmp(const ObFTSingleWord &l, const ObFTSingleWord &r)
+{
+  return utf8mb4_bin_strcmp(l.word, l.word_len, r.word, r.word_len);
+}
 
 int ObFTRangeDict::build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container)
 {
@@ -382,17 +413,40 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 {
   int ret = OB_SUCCESS;
   bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
-      dict = range_dicts_[i].dict_;
-      found = true;
+  const int64_t range_cnt = range_dicts_.size();
+  if (ranges_sorted_) {
+    // The first range whose end is not less than the word is the only candidate: ranges before
+    // it end before the word, and ranges after it do not start before it.
+    int64_t low = 0;
+    int64_t high = range_cnt;
+    while (low < high) {
+      const int64_t mid = low + (high - low) / 2;
+      const ObFTRange &range = range_dicts_[mid];
+      if (utf8mb4_bin_strcmp(range.end_.word, range.end_.word_len,
+                             single_word.ptr(), single_word.length()) < 0) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    if (low < range_cnt) {
+      const ObFTRange &range = range_dicts_[low];
+      if (utf8mb4_bin_strcmp(range.start_.word, range.start_.word_len,
+                             single_word.ptr(), single_word.length()) <= 0) {
+        dict = range.dict_;
+        found = true;
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && !found && i < range_cnt; ++i) {
+      const ObFTRange &range = range_dicts_[i];
+      if (utf8mb4_bin_strcmp(range.start_.word, range.start_.word_len,
+                             single_word.ptr(), single_word.length()) <= 0
+          && utf8mb4_bin_strcmp(range.end_.word, range.end_.word_len,
+                                single_word.ptr(), single_word.length()) >= 0) {
+        dict = range.dict_;
+        found = true;
+      }
     }
   }
   if (!found) {
@@ -420,6 +474,17 @@ int ObFTRangeDict::build_dict_from_cache(const ObFTCacheRangeContainer &range_co
       range.dict_ = dict;
       if (OB_FAIL(range_dicts_.push_back(range))) {
       }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ranges_sorted_ = true;
+    for (int64_t i = 1; ranges_sorted_ && i < range_dicts_.size(); ++i) {
+      const ObFTRange &prev = range_dicts_[i - 1];
+      const ObFTRange &cur = range_dicts_[i];
+      ranges_sorted_ = single_word_cmp(prev.start_, prev.end_) <= 0
+                       && single_word_cmp(prev.start_, cur.start_) <= 0
+                       && single_word_cmp(prev.end_, cur.end_) <= 0
+                       && single_word_cmp(cur.start_, cur.end_) <= 0;
     }
   }
   return ret;

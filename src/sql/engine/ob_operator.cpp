@@ -1423,8 +1423,10 @@ int ObBatchRowIter::get_next_row(ObEvalCtx &eval_ctx, const ObOpSpec &spec)
     }
   }
   // overwrite datums[0]: shallow copy
-  for (auto i = 0; OB_SUCC(ret) && i < spec.output_.count(); i++) {
-    ObExpr *expr = spec.output_.at(i);
+  ObExpr *const *output_exprs = spec.output_.get_data();
+  const int64_t output_cnt = spec.output_.count();
+  for (int64_t i = 0; OB_SUCC(ret) && i < output_cnt; i++) {
+    ObExpr *expr = output_exprs[i];
     if (expr->is_batch_result() && 0 != cur_idx()) {
       ObDatum *datums = expr->locate_batch_datums(eval_ctx);
       datums[0] = datums[cur_idx()];

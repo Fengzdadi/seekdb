@@ -31,6 +31,8 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
   } else if (OB_FAIL(ObSRDaaTIterImpl::init(*param.base_param_, *param.dim_iters_,
                                             *param.allocator_, *param.relevance_collector_))) {
   } else if (OB_FAIL(bm25_param_estimator_.init(param.bm25_param_est_ctx_))) {
+  } else if (OB_FAIL(init_linear_merge())) {
+  } else if (OB_FAIL(init_batch_filter())) {
   } else {
     mode_flag_ = param.mode_flag_;
     function_lookup_mode_ = param.function_lookup_mode_;
@@ -38,8 +40,282 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
   return ret;
 }
 
+int ObTextDaaTIter::init_linear_merge()
+{
+  int ret = OB_SUCCESS;
+  const int64_t dim_cnt = dim_iters_->count();
+  use_linear_merge_ = false;
+  if (dim_cnt > 0 && dim_cnt <= LINEAR_MERGE_MAX_DIM_CNT) {
+    const sql::ObDatumMeta &id_meta = iter_param_->id_proj_expr_->datum_meta_;
+    common::ObDatumBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(id_meta.type_, id_meta.cs_type_);
+    void *iters_buf = iter_allocator_->alloc(sizeof(ObTextRetrievalDaaTTokenIter *) * dim_cnt);
+    void *relevances_buf = iter_allocator_->alloc(sizeof(double) * dim_cnt);
+    void *active_buf = iter_allocator_->alloc(sizeof(int64_t) * dim_cnt);
+    if (OB_ISNULL(basic_funcs) || OB_ISNULL(basic_funcs->null_first_cmp_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_ISNULL(iters_buf) || OB_ISNULL(relevances_buf) || OB_ISNULL(active_buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      // same comparison as the merge heap, see ObSRMergeCmp::init
+      id_cmp_func_ = basic_funcs->null_first_cmp_;
+      token_iters_ = static_cast<ObTextRetrievalDaaTTokenIter **>(iters_buf);
+      dim_relevances_ = static_cast<double *>(relevances_buf);
+      active_dims_ = static_cast<int64_t *>(active_buf);
+      for (int64_t i = 0; i < dim_cnt; ++i) {
+        token_iters_[i] = static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(i));
+        dim_relevances_[i] = 0.0;
+      }
+      use_linear_merge_ = true;
+      reuse_linear_merge();
+    }
+  }
+  return ret;
+}
+
+void ObTextDaaTIter::reuse_linear_merge()
+{
+  if (use_linear_merge_) {
+    active_dim_cnt_ = dim_iters_->count();
+    for (int64_t i = 0; i < active_dim_cnt_; ++i) {
+      active_dims_[i] = i;
+    }
+  }
+}
+
+int ObTextDaaTIter::fill_merge_heap()
+{
+  int ret = OB_SUCCESS;
+  if (!use_linear_merge_) {
+    ret = ObSRDaaTIterImpl::fill_merge_heap();
+  } else {
+    // relevance of a dim is computed as in ObSRDaaTIterImpl::fill_merge_heap
+    double relevance = 0.0;
+    const int64_t *round_iter_idxes = next_round_iter_idxes_.get_data();
+    const ObDatum **iter_ids = iter_domain_ids_.get_data();
+    for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
+      const int64_t iter_idx = round_iter_idxes[i];
+      ObTextRetrievalDaaTTokenIter *token_iter = token_iters_[iter_idx];
+      if (OB_FAIL(token_iter->get_next_row())) {
+        if (OB_UNLIKELY(OB_ITER_END != ret)) {
+          LOG_WARN("fail to get next row from dim iter", K(ret), K(iter_idx));
+        } else {
+          ret = OB_SUCCESS;
+          int64_t pos = 0;
+          while (pos < active_dim_cnt_ && active_dims_[pos] != iter_idx) {
+            ++pos;
+          }
+          if (pos < active_dim_cnt_) {
+            --active_dim_cnt_;
+            for (; pos < active_dim_cnt_; ++pos) {
+              active_dims_[pos] = active_dims_[pos + 1];
+            }
+          }
+        }
+      } else {
+        if (token_iter->has_relevance()) {
+          relevance = token_iter->curr_relevance();
+        }
+        if (OB_NOT_NULL(iter_param_->dim_weights_)) {
+          relevance = relevance * iter_param_->field_boost_ * iter_param_->dim_weights_->at(iter_idx);
+        }
+        dim_relevances_[iter_idx] = relevance;
+        iter_ids[iter_idx] = &token_iter->curr_id();
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (0 == active_dim_cnt_) {
+      ret = OB_ITER_END;
+    } else {
+      next_round_cnt_ = 0;
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::collect_dims_by_id(const ObDatum *&id_datum, double &relevance, bool &got_valid_id)
+{
+  int ret = OB_SUCCESS;
+  if (!use_linear_merge_) {
+    ret = ObSRDaaTIterImpl::collect_dims_by_id(id_datum, relevance, got_valid_id);
+  } else if (OB_UNLIKELY(active_dim_cnt_ <= 0)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    const ObDatum **iter_ids = iter_domain_ids_.get_data();
+    int64_t *round_iter_idxes = next_round_iter_idxes_.get_data();
+    relevance = 0.0;
+    got_valid_id = false;
+    // the first dim with the smallest doc id, dims before it have bigger doc ids
+    int64_t min_pos = 0;
+    const ObDatum *min_id = iter_ids[active_dims_[0]];
+    for (int64_t pos = 1; OB_SUCC(ret) && pos < active_dim_cnt_; ++pos) {
+      const ObDatum *id = iter_ids[active_dims_[pos]];
+      int cmp_ret = 0;
+      if (OB_FAIL(id_cmp_func_(*id, *min_id, cmp_ret, nullptr))) {
+        LOG_WARN("fail to compare doc id", K(ret));
+      } else if (cmp_ret < 0) {
+        min_pos = pos;
+        min_id = id;
+      }
+    }
+    int64_t iter_idx = active_dims_[min_pos];
+    for (int64_t pos = min_pos; OB_SUCC(ret) && pos < active_dim_cnt_; ++pos) {
+      const int64_t dim_idx = active_dims_[pos];
+      int cmp_ret = 0;
+      if (pos > min_pos && OB_FAIL(id_cmp_func_(*iter_ids[dim_idx], *min_id, cmp_ret, nullptr))) {
+        LOG_WARN("fail to compare doc id", K(ret));
+      } else if (0 != cmp_ret) {
+      } else if (OB_FAIL(relevance_collector_->collect_one_dim(dim_idx, dim_relevances_[dim_idx]))) {
+        LOG_WARN("fail to collect dim", K(ret), K(dim_idx));
+      } else {
+        iter_idx = dim_idx;
+        round_iter_idxes[next_round_cnt_++] = dim_idx;
+      }
+    }
+    if (OB_SUCC(ret)) {
+      id_datum = iter_ids[iter_idx];
+      if (OB_ISNULL(id_datum)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(relevance_collector_->get_result(relevance, got_valid_id))) {
+      } else if (got_valid_id && OB_FAIL(process_collected_row(*id_datum, relevance))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::init_batch_filter()
+{
+  int ret = OB_SUCCESS;
+  sql::ObExpr *filter_expr = iter_param_->filter_expr_;
+  sql::ObExpr *relevance_proj_expr = iter_param_->relevance_proj_expr_;
+  sql::ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
+  use_batch_filter_ = false;
+  if (OB_ISNULL(filter_expr) || OB_ISNULL(relevance_proj_expr) || OB_ISNULL(eval_ctx)
+      || !eval_ctx->is_vectorized() || !filter_expr->is_batch_result()
+      || OB_ISNULL(filter_expr->eval_batch_func_) || !relevance_proj_expr->is_batch_result()) {
+    // the filter is evaluated row by row
+  } else {
+    // Only the filter itself is re-evaluated for each batch, so it must directly use the score
+    // and constants, as filter_on_demand() also assumes.
+    bool direct_filter = true;
+    for (int64_t i = 0; direct_filter && i < filter_expr->arg_cnt_; ++i) {
+      const sql::ObExpr *arg = filter_expr->args_[i];
+      direct_filter = relevance_proj_expr == arg || (OB_NOT_NULL(arg) && !arg->is_batch_result());
+    }
+    if (direct_filter) {
+      const int64_t skip_size = sql::ObBitVector::memory_size(eval_ctx->max_batch_size_);
+      void *skip_buf = iter_allocator_->alloc(skip_size);
+      if (OB_ISNULL(skip_buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        filter_skip_ = sql::to_bit_vector(skip_buf);
+        filter_skip_->reset(eval_ctx->max_batch_size_);
+        use_batch_filter_ = true;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTextDaaTIter::get_next_rows(const int64_t capacity, int64_t &count)
+{
+  batch_capacity_ = capacity;
+  return ObSRDaaTIterImpl::get_next_rows(capacity, count);
+}
+
+int ObTextDaaTIter::do_one_merge_round(int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  // the eval ctx is not null if use_batch_filter_ is set
+  const int64_t end_idx = !use_batch_filter_ ? 0 : MIN(MIN(batch_capacity_, iter_param_->max_batch_size_),
+                                                       iter_param_->eval_ctx_->max_batch_size_);
+  if (!use_batch_filter_ || iter_param_->limit_param_->is_valid() || count >= end_idx) {
+    ret = ObSRDaaTIterImpl::do_one_merge_round(count);
+  } else {
+    // Without a limit or an offset every row that passes the filter is output, in merge order,
+    // so filtering the rows of the rest of the batch together outputs the same rows.
+    int64_t buffered_cnt = count;
+    while (OB_SUCC(ret) && buffered_cnt < end_idx) {
+      const ObDatum *id_datum = nullptr;
+      double relevance = 0.0;
+      bool got_valid_id = false;
+      if (OB_FAIL(fill_merge_heap())) {
+      } else if (OB_FAIL(collect_dims_by_id(id_datum, relevance, got_valid_id))) {
+      } else if (!got_valid_id) {
+      } else if (OB_UNLIKELY(buffered_cnt >= buffered_domain_ids_.count()
+                             || buffered_cnt >= buffered_relevances_.count())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(buffered_domain_ids_[buffered_cnt].from_datum(*id_datum))) {
+      } else {
+        buffered_relevances_[buffered_cnt] = relevance;
+        ++buffered_cnt;
+      }
+    }
+    if ((OB_SUCC(ret) || OB_ITER_END == ret) && buffered_cnt > count) {
+      int tmp_ret = filter_buffered_rows(count, buffered_cnt, count);
+      if (OB_SUCCESS != tmp_ret) {
+        ret = tmp_ret;
+      }
+    }
+  }
+  return ret;
+}
+
+// Evaluates the filter on buffered rows [begin, end) and moves the rows that pass it to
+// [begin, new_end), keeping their order.
+int ObTextDaaTIter::filter_buffered_rows(const int64_t begin, const int64_t end, int64_t &new_end)
+{
+  int ret = OB_SUCCESS;
+  sql::ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
+  sql::ObExpr *filter_expr = iter_param_->filter_expr_;
+  sql::ObExpr *relevance_proj_expr = iter_param_->relevance_proj_expr_;
+  sql::ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+  guard.set_batch_size(end);
+  ObDatum *relevance_datums = relevance_proj_expr->locate_batch_datums(*eval_ctx);
+  sql::ObBitVector &relevance_evaluated = relevance_proj_expr->get_evaluated_flags(*eval_ctx);
+  for (int64_t i = begin; i < end; ++i) {
+    relevance_proj_expr->reset_ptr_in_datum(*eval_ctx, i);
+    relevance_datums[i].set_double(buffered_relevances_[i]);
+    relevance_evaluated.set(i);
+  }
+  relevance_proj_expr->set_evaluated_projected(*eval_ctx);
+  // rows before begin are already output
+  filter_skip_->reset(end);
+  if (begin > 0) {
+    filter_skip_->set_all(begin);
+  }
+  filter_expr->get_eval_info(*eval_ctx).clear_evaluated_flag();
+  if (OB_FAIL(filter_expr->eval_batch(*eval_ctx, *filter_skip_, end))) {
+  } else {
+    const ObDatum *filter_res = filter_expr->locate_batch_datums(*eval_ctx);
+    int64_t output_idx = begin;
+    for (int64_t i = begin; i < end; ++i) {
+      if (!(filter_res[i].is_null() || 0 == filter_res[i].get_int())) {
+        if (output_idx != i) {
+          buffered_domain_ids_[output_idx] = buffered_domain_ids_[i];
+          buffered_relevances_[output_idx] = buffered_relevances_[i];
+        }
+        ++output_idx;
+      }
+    }
+    input_row_cnt_ += output_idx - begin;
+    output_row_cnt_ += output_idx - begin;
+    new_end = output_idx;
+  }
+  return ret;
+}
+
 void ObTextDaaTIter::reset()
 {
+  use_linear_merge_ = false;
+  id_cmp_func_ = nullptr;
+  token_iters_ = nullptr;
+  dim_relevances_ = nullptr;
+  active_dims_ = nullptr;
+  active_dim_cnt_ = 0;
+  use_batch_filter_ = false;
+  batch_capacity_ = 0;
+  filter_skip_ = nullptr;
   bm25_param_estimator_.reset();
   // this class can know the type of dim_iters_, but ObSRDaaTIterImpl maybe not
   if (OB_NOT_NULL(dim_iters_)) {
@@ -63,6 +339,7 @@ void ObTextDaaTIter::reuse(const bool switch_tablet)
     }
   }
   ObSRDaaTIterImpl::reuse(switch_tablet);
+  reuse_linear_merge();
 }
 
 int ObTextDaaTIter::pre_process()

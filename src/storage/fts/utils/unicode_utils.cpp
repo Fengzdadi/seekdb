@@ -150,6 +150,33 @@ ob_wc_t ObUnicodeBlockUtils::get_unicode_from_u8(const char *input, const uint8_
   return unicode;
 }
 
+namespace
+{
+// Membership bitmap over the CJK unified ideographs, so that a lookup does not scan the array.
+struct CnNumberBitmap
+{
+  static const ob_wc_t BEGIN = 0x4E00;
+  static const ob_wc_t END = 0xA000;
+  CnNumberBitmap(const ob_wc_t *chars, const int64_t cnt) : all_in_range_(true)
+  {
+    MEMSET(bits_, 0, sizeof(bits_));
+    for (int64_t i = 0; i < cnt; ++i) {
+      if (chars[i] >= BEGIN && chars[i] < END) {
+        bits_[(chars[i] - BEGIN) / 64] |= 1ULL << ((chars[i] - BEGIN) % 64);
+      } else {
+        all_in_range_ = false;
+      }
+    }
+  }
+  bool contains(const ob_wc_t c) const
+  {
+    return c >= BEGIN && c < END && 0 != (bits_[(c - BEGIN) / 64] & (1ULL << ((c - BEGIN) % 64)));
+  }
+  uint64_t bits_[(END - BEGIN) / 64];
+  bool all_in_range_; // false if some character is out of the bitmap
+};
+} // namespace
+
 #define OB_IK_GET_NUMBER_UNICODE(str) get_unicode_from_u8(str, sizeof(str))
 bool ObUnicodeBlockUtils::is_unicode_cn_number(ob_wc_t unicode)
 {
@@ -173,7 +200,12 @@ bool ObUnicodeBlockUtils::is_unicode_cn_number(ob_wc_t unicode)
       OB_IK_GET_NUMBER_UNICODE("億"), OB_IK_GET_NUMBER_UNICODE("兆"),
       OB_IK_GET_NUMBER_UNICODE("卅"), OB_IK_GET_NUMBER_UNICODE("廿"),
   };
-  for (int i = 0; i < sizeof(cn_number_array) / sizeof(cn_number_array[0]); i++) {
+  static const int64_t cn_number_cnt = sizeof(cn_number_array) / sizeof(cn_number_array[0]);
+  static const CnNumberBitmap cn_number_bitmap(cn_number_array, cn_number_cnt);
+  if (cn_number_bitmap.all_in_range_) {
+    return cn_number_bitmap.contains(unicode);
+  }
+  for (int i = 0; i < cn_number_cnt; i++) {
     if (unicode == cn_number_array[i]) {
       return true;
     }

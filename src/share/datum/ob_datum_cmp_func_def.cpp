@@ -25,6 +25,28 @@ using namespace oceanbase;
 using namespace oceanbase::common;
 using namespace oceanbase::common::datum_cmp;
 
+Utf8mb4GeneralCiCmpCtx::Utf8mb4GeneralCiCmpCtx()
+  : cs_(ObCharset::get_charset(CS_TYPE_UTF8MB4_GENERAL_CI)),
+    uni_plane_(OB_ISNULL(cs_) ? nullptr : cs_->caseinfo),
+    maxchar_(OB_ISNULL(uni_plane_) ? 0 : uni_plane_->maxchar),
+    lower_sort_(OB_NOT_NULL(cs_) && 0 != (cs_->state & OB_CS_LOWER_SORT))
+{
+  // mirrors ob_tosort_unicode for code points below 0x80
+  const ObUnicaseInfoChar *page = OB_ISNULL(uni_plane_) ? nullptr : uni_plane_->page[0];
+  for (uint32_t c = 0; c < 128; ++c) {
+    if (c > maxchar_) {
+      ascii_weight_[c] = OB_CS_REPLACEMENT_CHARACTER;
+    } else if (OB_ISNULL(page)) {
+      ascii_weight_[c] = c;
+    } else {
+      ascii_weight_[c] = lower_sort_ ? page[c].tolower : page[c].sort;
+    }
+  }
+  if (OB_ISNULL(uni_plane_) || OB_ISNULL(uni_plane_->page)) {
+    cs_ = nullptr;
+  }
+}
+
 
 int ObDatumJsonCmpImpl::cmp(const ObDatum &l, const ObDatum &r, int &cmp_ret,
                             const bool is_lob, const ObDatumAccessContext *access_ctx)
