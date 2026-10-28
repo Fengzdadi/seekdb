@@ -140,6 +140,33 @@ select tokenize('的', 'space');
 select tokenize('的', 'ngram', '[{"additional_args":[{"ngram_token_size":3}]}]');
 select tokenize('的', 'ngram2', '[{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":4}]}]');
 
+# TOKENIZE with the parser given in different ways, changing between statements and between the
+# rows of one statement
+
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', NULL);
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', ' ik ');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'IK');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'beng');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik', '[{"additional_args":[{"ik_mode":"max_word"}]}]');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik', '[{"output":"all"}]');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik');
+--error 1128
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'no_such_parser');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik');
+--error 1210
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', '');
+--error 1128
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ik.1');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'beng');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'space');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ngram');
+select tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', 'ngram2');
+select i, p, tokenize('Full-text 全文索引 tokenizer 分词器, DATABASE database 数据库', p) from (select 1 i, 'ik' p union all select 2, 'beng' union all select 3, 'ik' union all select 4, 'space' union all select 5, 'ngram' union all select 6, 'IK' union all select 7, 'ngram2' union all select 8, 'beng' union all select 9, ' ik') x order by i;
+select i, tokenize(c, p) from (select 1 i, '数据库 database 全文索引' c, 'beng' p union all select 2, '数据库 database 全文索引', 'ik' union all select 3, 'database 数据库', 'beng' union all select 4, 'database 数据库', 'ik') x order by i;
+
 # MATCH over indexes built after the data is loaded and maintained by DML
 
 create table docs (id int primary key, category int, title varchar(200), content text,

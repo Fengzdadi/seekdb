@@ -27,6 +27,41 @@ namespace blocksstable
 using namespace common;
 const ObColumnHeader::Type ObStringDiffDecoder::type_;
 
+namespace
+{
+// Same as ObStringDiffHeader::LeftToRight, without calling memcpy for the short parts of a string.
+struct ShortLeftToRight
+{
+  template <typename L, typename R>
+  OB_INLINE void operator()(L l, R r, int64_t n)
+  {
+    const char *src = reinterpret_cast<const char *>(l);
+    char *dst = reinterpret_cast<char *>(r);
+    if (n > 16) {
+      MEMCPY(dst, src, n);
+    } else if (n >= 8) {
+      uint64_t head = 0;
+      uint64_t tail = 0;
+      MEMCPY(&head, src, sizeof(head));
+      MEMCPY(&tail, src + n - sizeof(tail), sizeof(tail));
+      MEMCPY(dst, &head, sizeof(head));
+      MEMCPY(dst + n - sizeof(tail), &tail, sizeof(tail));
+    } else if (n >= 4) {
+      uint32_t head = 0;
+      uint32_t tail = 0;
+      MEMCPY(&head, src, sizeof(head));
+      MEMCPY(&tail, src + n - sizeof(tail), sizeof(tail));
+      MEMCPY(dst, &head, sizeof(head));
+      MEMCPY(dst + n - sizeof(tail), &tail, sizeof(tail));
+    } else if (n > 0) {
+      dst[0] = src[0];
+      dst[n / 2] = src[n / 2];
+      dst[n - 1] = src[n - 1];
+    }
+  }
+};
+} // namespace
+
 ObStringDiffDecoder::ObStringDiffDecoder() : header_(NULL)
 {
 }
@@ -167,7 +202,7 @@ int ObStringDiffDecoder::batch_decode(
       ret = OB_ALLOCATE_MEMORY_FAILED;
     } else {
       for (int64_t i = 0; i < row_cap; ++i) {
-        header_->copy_string(ObStringDiffHeader::LeftToRight(), std::logical_not<uint8_t>(),
+        header_->copy_string(ShortLeftToRight(), std::logical_not<uint8_t>(),
             header_->common_data(), buf + i * buf_size);
       }
     }
@@ -192,7 +227,7 @@ int ObStringDiffDecoder::batch_decode(
                 reinterpret_cast<unsigned char *>(str_ptr));
           } else {
             header_->copy_string(
-              ObStringDiffHeader::LeftToRight(),
+              ShortLeftToRight(),
               ObStringDiffHeader::LogicTrue<uint8_t>(),
               cell_data, str_ptr);
           }
@@ -224,7 +259,7 @@ int ObStringDiffDecoder::batch_decode(
                 reinterpret_cast<unsigned char *>(str_ptr));
           } else {
             header_->copy_string(
-              ObStringDiffHeader::LeftToRight(),
+              ShortLeftToRight(),
               ObStringDiffHeader::LogicTrue<uint8_t>(),
               cell_data, str_ptr);
           }

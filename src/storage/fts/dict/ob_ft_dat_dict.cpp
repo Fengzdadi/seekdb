@@ -258,9 +258,11 @@ int ObFTDATReader<DATA_TYPE>::match_with_hit(const ObString &ft_char,
   int32_t *base = reinterpret_cast<int32_t *>(dat_->buff + dat_->base_offset_);
   int32_t *check = reinterpret_cast<int32_t *>(dat_->buff + dat_->check_offset_);
 
-  ObFTSingleWord word;
-  word.set_word(ft_char.ptr(), ft_char.length());
-  if (OB_FAIL(dat_->get_map()->find(word, code)) && OB_ENTRY_NOT_EXIST != ret) {
+  int32_t word_len = static_cast<int32_t>(ft_char.length());
+  if (OB_UNLIKELY(word_len > ObCharset::MAX_MB_LEN || OB_ISNULL(ft_char.ptr()))) {
+    word_len = 0; // ObFTSingleWord::set_word() refuses the word and leaves it empty
+  }
+  if (OB_FAIL(dat_->get_map()->find(ft_char.ptr(), word_len, code)) && OB_ENTRY_NOT_EXIST != ret) {
   } else if (OB_ENTRY_NOT_EXIST == ret) {
     ret = OB_SUCCESS;
     hit.set_unmatch();
@@ -301,19 +303,7 @@ ObArrayHashMap *ObFTDAT::get_map() { return reinterpret_cast<ObArrayHashMap *>(b
 
 int ObArrayHashMap::find(const ObFTSingleWord &word, ObFTWordCode &code) const
 {
-  int ret = OB_ENTRY_NOT_EXIST;
-  uint64_t hash = word.get_word().hash();
-  uint64_t index = hash % header_.capacity_;
-  while (header_.data[index].used) {
-    if (header_.data[index].word == word) {
-      code = header_.data[index].code;
-      ret = OB_SUCCESS;
-      break;
-    } else {
-      index = (index + 3) % header_.capacity_;
-    }
-  }
-  return ret;
+  return find(word.word, word.word_len, code);
 }
 
 int ObArrayHashMap::insert(const ObString &key, ObFTWordCode code)

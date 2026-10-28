@@ -18,6 +18,7 @@
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DAT_DICT_H_
 
 #include "lib/allocator/ob_allocator.h"
+#include "lib/hash_func/murmur_hash.h"
 #include "lib/ob_errno.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "ob_ft_dict_def.h"
@@ -66,6 +67,36 @@ public:
   int insert(const ObString &key, ObFTWordCode code);
 
   int find(const ObFTSingleWord &word, ObFTWordCode &code) const;
+
+  // Same as find(ObFTSingleWord), for the word_len (at most ObCharset::MAX_MB_LEN) bytes at word.
+  OB_INLINE int find(const char *word, const int32_t word_len, ObFTWordCode &code) const
+  {
+    int ret = OB_ENTRY_NOT_EXIST;
+    const uint64_t capacity = header_.capacity_;
+    // ObString::hash() of the word
+    uint64_t index = common::murmurhash64A(word, word_len, 0) % capacity;
+    while (header_.data[index].used) {
+      const Entry &entry = header_.data[index];
+      int32_t i = 0;
+      if (entry.word.word_len == word_len) {
+        while (i < word_len && entry.word.word[i] == word[i]) {
+          ++i;
+        }
+      }
+      if (entry.word.word_len == word_len && i == word_len) {
+        code = entry.code;
+        ret = OB_SUCCESS;
+        break;
+      } else {
+        // the probe sequence of insert(): index = (index + 3) % capacity
+        index += 3;
+        if (index >= capacity) {
+          index -= capacity;
+        }
+      }
+    }
+    return ret;
+  }
 
 private:
   struct Header header_;

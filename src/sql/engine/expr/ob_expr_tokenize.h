@@ -87,7 +87,7 @@ private:
                          TokenizeParam &param);
 
   static int parse_fulltext(const ObExpr &expr, ObEvalCtx &ctx, TokenizeParam &param);
-  static int parse_parser_name(const ObExpr &expr, ObEvalCtx &ctx, TokenizeParam &param);
+  static int parse_parser_name(const ObExpr &expr, ObEvalCtx &ctx, ObString &raw_parser_name);
   static int parse_parser_properties(const ObExpr &expr,
                                      ObEvalCtx &ctx,
                                      MultimodeAlloctor &mm_alloc,

@@ -86,7 +86,7 @@ int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &
 int ObFTDictHub::load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)
 {
   int ret = OB_SUCCESS;
-  ObFTDictInfo info;
+  int32_t range_count = 0;
   container.reset();
   ObFTDictInfoKey key(static_cast<uint64_t>(desc.type_));
   if (!is_inited_) {
@@ -94,16 +94,18 @@ int ObFTDictHub::load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &c
   } else {
     {
       ObBucketHashRLockGuard guard(rw_dict_lock_, key.hash());
-      if (OB_FAIL(get_dict_info(key, info))) {
-        if (OB_HASH_NOT_EXIST == ret) {
-          // dict not exist, make new one, by caller
-          ret = OB_ENTRY_NOT_EXIST;
-        } else {
-        }
+      // Every new parser loads the dicts, so read the range count in place instead of copying
+      // the large ObFTDictInfo. put_dict_info() changes it under the write lock of this bucket.
+      const ObFTDictInfo *info = dict_map_.get(key);
+      if (OB_ISNULL(info)) {
+        // dict not exist, make new one, by caller
+        ret = OB_ENTRY_NOT_EXIST;
+      } else {
+        range_count = info->range_count_;
       }
     }
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(ObFTRangeDict::try_load_cache(desc, info.range_count_, container))) {
+    } else if (OB_FAIL(ObFTRangeDict::try_load_cache(desc, range_count, container))) {
       if (OB_ENTRY_NOT_EXIST == ret) {
         // dict not exist, make new one, by caller
       } else {
