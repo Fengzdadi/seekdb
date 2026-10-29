@@ -16,6 +16,7 @@
 
 #include "ob_abort.h"
 #include "lib/ob_define.h"
+#include "lib/oblog/ob_log.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -41,4 +42,18 @@ OB_NORETURN OB_WEAK_SYMBOL void ob_abort (void) __THROW
 #endif
   fprintf(stderr, "OB_ABORT, tid: %ld, lbt: %s\n", GETTID(), oceanbase::common::lbt());
   abort();
+}
+
+void ob_assert_fail (const char *exp, const char *file, const int line, const char *function) __THROW
+{
+  // the same two logs as OB_ASSERT printed in place, at the location of the assertion
+  if (OB_LOG_NEED_TO_PRINT(ERROR)) {
+    OB_LOGGER.log_message_fmt("", OB_LOG_LEVEL_ERROR, file, line, function, oceanbase::common::OB_ERROR,
+                              "assert fail, exp=%s", exp);
+  }
+  if (OB_LOG_NEED_TO_PRINT(ERROR)) {
+    OB_LOGGER.log_message_fmt("", OB_LOG_LEVEL_ERROR, file, line, function, oceanbase::common::OB_ERROR,
+                              "assert fail BACKTRACE:%s", oceanbase::common::lbt());
+  }
+  ob_abort();
 }

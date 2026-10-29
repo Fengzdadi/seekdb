@@ -701,12 +701,12 @@ for (__typeof__((c).at(0)) *it = ((extra_condition) && (c).count() > 0 ? &(c).at
   } while (false)
 
 // Evaluate once and remain fatal in both Debug and Release builds.
+// The failure path (logs and ob_abort()) is the out of line ob_assert_fail(), so that the many
+// small inline functions that use OB_ASSERT stay cheap enough for the compiler to inline them.
 #define OB_ASSERT(x)                                    \
   do{                                                   \
     if(OB_UNLIKELY(!(x))) {                             \
-      _OB_LOG_RET(ERROR, oceanbase::common::OB_ERROR, "assert fail, exp=%s", #x);        \
-      BACKTRACE_RET(ERROR, oceanbase::common::OB_ERROR, 1, "assert fail");               \
-      ob_abort();                                       \
+      ob_assert_fail(#x, __FILE__, __LINE__, __FUNCTION__);                              \
     }                                                   \
   } while(false)
 

@@ -29,6 +29,11 @@
 #endif
 
 extern void ob_abort (void) __THROW;
+// Failure path of OB_ASSERT: logs the failed expression at the location of the assertion with a
+// backtrace, then calls ob_abort(). It is out of line, so that the inline functions that use
+// OB_ASSERT stay small enough to be inlined.
+extern void ob_assert_fail (const char *exp, const char *file, const int line, const char *function)
+    __THROW __attribute__((cold, noinline));
 
 // we use int instead of bool to compatible with c code.
 #ifdef __cplusplus
