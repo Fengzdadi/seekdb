@@ -108,6 +108,12 @@ public:
   static int report_ddl_error_message(const ObBuildDDLErrorMessage &error_message,
       const ObCurTraceId::TraceId &trace_id, const int64_t task_id, const int64_t parent_task_id, const uint64_t table_id,
       const int64_t schema_version, const int64_t object_id, const common::ObAddr &addr, common::ObMySQLProxy &sql_proxy);
+  // A session that waits for a ddl task to finish polls the error messages (see ObDDLExecutorUtil::wait_ddl_finish).
+  // Between two polls it waits in wait_report(), which returns as soon as report_ddl_error_message() has written a
+  // message, so that the session does not sleep out the poll interval after the task has finished. The session takes
+  // the report sequence before it polls, so that a report between the poll and the wait is not missed.
+  static int64_t get_report_seq();
+  static void wait_report(const int64_t seen_report_seq, const int64_t max_wait_us);
   static int report_ddl_error_message(const ObBuildDDLErrorMessage &error_message,
       const int64_t task_id, const uint64_t table_id, const int64_t schema_version, const int64_t object_id,
       const int64_t parent_task_id, const common::ObAddr &addr, common::ObMySQLProxy &sql_proxy);
