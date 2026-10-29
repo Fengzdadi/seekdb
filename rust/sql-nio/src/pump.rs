@@ -546,6 +546,15 @@ pub(crate) fn drain_socket(
                 conn.peer_closed.store(true, Ordering::Release);
                 break;
             }
+            // A plain read that did not fill the space it was given found the socket empty. Data or EOF arriving
+            // later raises a new readiness event, so the read that would only return WouldBlock is skipped.
+            Ok(n) if cfg!(unix)
+                && g.tls.is_none()
+                && n < read_len
+                && g.inbuf.len() < g.inbuf.capacity() =>
+            {
+                break
+            }
             Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
