@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX LIB
 
 #include "ob_vsag_adaptor.h"
+#include <atomic>
 #include <map>
 #include <set>
 #include <mutex>
@@ -58,6 +59,7 @@ extern "C" long  seekdb_cuvs_graph_degree(void *handle);
 extern "C" int   seekdb_cuvs_copy_graph(void *handle, unsigned int *out_graph);
 extern "C" void *seekdb_cuvs_load(const float *base, long n, long dim,
                                   const unsigned int *graph, long degree);
+extern "C" int   seekdb_cuvs_warmup(long dim);
 #else
 // GPU backend not compiled in (OB_BUILD_CUVS=OFF): inert stubs so oblib links
 // without libseekdb_cuvs_bridge.so. ob_cuvs_enabled() is false, so these are
@@ -70,6 +72,7 @@ static void *seekdb_cuvs_deserialize(const char *, long, long) { return nullptr;
 static long  seekdb_cuvs_graph_degree(void *) { return 0; }
 static int   seekdb_cuvs_copy_graph(void *, unsigned int *) { return -1; }
 static void *seekdb_cuvs_load(const float *, long, long, const unsigned int *, long) { return nullptr; }
+static int   seekdb_cuvs_warmup(long) { return -1; }
 #endif
 
 namespace oceanbase {
@@ -366,6 +369,26 @@ static bool ob_cuvs_snapshot_big_stack(ObCuvsSnapshotJob &job) {
   return ob_cuvs_start_big_stack(thread, ob_cuvs_snapshot_job, &job) &&
          pthread_join(thread, nullptr) == 0 && job.rc_ == 0;
 }
+// GPU runtime initialization and CAGRA kernel loading happen once per process. They are
+// started in the background when a lib=cuvs index first gets rows, so they overlap the
+// rest of the table scan instead of delaying the first build.
+static std::once_flag g_ob_cuvs_warmup_once;
+static std::atomic<int64_t> g_ob_cuvs_warmup_us(-1);  // -1 until the warm-up has finished
+static void *ob_cuvs_warmup_job(void *arg) {
+  const int64_t start_us = ObTimeUtility::current_time();
+  if (seekdb_cuvs_warmup(reinterpret_cast<long>(arg)) == 0) {
+    g_ob_cuvs_warmup_us = ObTimeUtility::current_time() - start_us;
+  }
+  return nullptr;
+}
+static void ob_cuvs_start_warmup(long dim) {
+  std::call_once(g_ob_cuvs_warmup_once, [dim]() {
+    pthread_t thread;
+    if (ob_cuvs_start_big_stack(thread, ob_cuvs_warmup_job, reinterpret_cast<void *>(dim))) {
+      pthread_detach(thread);
+    }
+  });
+}
 // Builds the CAGRA graph unless handle_ is already built, then copies it to host memory.
 struct ObCuvsGraphJob {
   const float *base_; long n_; long dim_;
@@ -483,7 +506,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   const int64_t total_us = ObTimeUtility::current_time() - start_us;
   LOG_INFO("[OBVSAG][cuVS] serialized GPU CAGRA snapshot", KP(key), K(n), K(dim32),
            K(built), K(build_us), K(graph_bytes), K(degree64), "copy_us", job.copy_us_,
-           K(head_us), K(wait_us), K(total_us));
+           K(head_us), K(wait_us), K(total_us), "warmup_us", g_ob_cuvs_warmup_us.load());
   return true;
 }
 
@@ -2209,8 +2232,11 @@ long cuvs_batch_knn(const float *base, long n, long dim,
 void mark_cuvs_index(void *key) {
 #ifdef OB_BUILD_CUVS
   if (key == nullptr) { return; }
-  std::lock_guard<std::mutex> guard(g_ob_cuvs_marked_mu);
-  g_ob_cuvs_marked.insert(key);
+  {
+    std::lock_guard<std::mutex> guard(g_ob_cuvs_marked_mu);
+    g_ob_cuvs_marked.insert(key);
+  }
+  ob_cuvs_start_warmup(static_cast<HnswIndexHandler *>(key)->get_dim());
 #else
   (void)key;
 #endif

@@ -228,6 +228,31 @@ fail:
   return NULL;
 }
 
+int seekdb_cuvs_warmup(long dim)
+{
+  /* A tiny build and search with the real parameters on fixed pseudo-random data: it
+   * initializes the HIP runtime and loads the CAGRA kernels for this dimension. */
+  const long n = 2048;
+  if (dim <= 0) return 1;
+  float* base = (float*)malloc(sizeof(float) * n * dim);
+  if (!base) return 2;
+  unsigned int seed = 12345u;
+  for (long i = 0; i < n * dim; ++i) {
+    seed = seed * 1664525u + 1013904223u;
+    base[i] = (float)(seed >> 8) / 16777216.0f;
+  }
+  int rc = 3;
+  void* h = seekdb_cuvs_build(base, n, dim);
+  if (h) {
+    unsigned int ids[10];
+    float dist[10];
+    rc = seekdb_cuvs_search(h, base, 1, 10, ids, dist);
+    seekdb_cuvs_free(h);
+  }
+  free(base);
+  return rc;
+}
+
 int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
                           const float* query, long nq, long topk,
                           unsigned int* out_ids)

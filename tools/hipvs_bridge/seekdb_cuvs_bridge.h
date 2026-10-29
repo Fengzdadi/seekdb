@@ -37,6 +37,13 @@ long  seekdb_cuvs_graph_degree(void* handle);
 int   seekdb_cuvs_copy_graph(void* handle, unsigned int* out_graph);
 void* seekdb_cuvs_load(const float* base, long n, long dim,
                        const unsigned int* graph, long degree);
+
+/* Builds and searches a tiny index with the same parameters on fixed synthetic data,
+ * which initializes the GPU runtime and loads the CAGRA kernels for `dim`. seekdb runs
+ * it in the background when an offline lib=cuvs DDL starts feeding rows, so this
+ * one-time work overlaps the table scan instead of delaying the real build.
+ * Returns 0 on success. */
+int seekdb_cuvs_warmup(long dim);
 #ifdef __cplusplus
 }
 #endif
