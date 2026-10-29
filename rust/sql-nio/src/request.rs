@@ -661,6 +661,12 @@ pub unsafe extern "C" fn nio_commit_request(
                     take_mid_request_body_for_generation_locked(&mut g, continuation.generation);
                 let released_login = g.login.take();
                 g.final_response = FinalResponseState::Committed(continuation);
+                // Write the final response from this thread when nothing waits for the socket to become
+                // writable, as drain_blocking_response does for the earlier ones. The client gets it without
+                // a round trip through the reactor; what the socket does not take is left to the reactor.
+                if g.tls.is_none() && !g.want_write && !g.output_is_empty() {
+                    let _ = flush_plain_locked(&conn, &mut g);
+                }
 
                 let completed = take_final_completion_locked(&mut g);
                 let finished = completed
