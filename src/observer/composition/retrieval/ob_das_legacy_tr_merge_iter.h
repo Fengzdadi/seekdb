@@ -108,6 +108,7 @@ private:
   int init_topk_limit();
   int init_block_max_iter_param();
   int init_doc_length_est_param();
+  int project_placeholder_relevance(const int64_t count);
 private:
   static const int64_t INV_IDX_ROWKEY_COL_CNT = 2;
 private:

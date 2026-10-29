@@ -105,7 +105,7 @@ int ObDASLegacyTRMergeIter::init_das_iter_scan_params()
 {
   int ret = OB_SUCCESS;
   const int64_t dim_iter_cnt = taat_mode_ ? 1 : query_tokens_.count();
-  if (!ir_ctdef_->need_estimate_total_doc_cnt() && 0 != dim_iter_cnt) {
+  if (ir_ctdef_->need_calc_relevance() && !ir_ctdef_->need_estimate_total_doc_cnt() && 0 != dim_iter_cnt) {
     void *buf = nullptr;
     if (OB_ISNULL(buf = myself_allocator_.alloc(sizeof(ObTableScanParam)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -379,8 +379,15 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
   sr_iter_param_.eval_ctx_ = ir_rtdef_->eval_ctx_;
   sr_iter_param_.id_proj_expr_ = ir_ctdef_->inv_scan_domain_id_col_;
   sr_iter_param_.relevance_expr_ = ir_ctdef_->relevance_expr_;
-  sr_iter_param_.relevance_proj_expr_ = ir_ctdef_->relevance_proj_col_;
-  sr_iter_param_.filter_expr_ = ir_ctdef_->match_filter_;
+  if (ir_ctdef_->need_calc_relevance()) {
+    sr_iter_param_.relevance_proj_expr_ = ir_ctdef_->relevance_proj_col_;
+    sr_iter_param_.filter_expr_ = ir_ctdef_->match_filter_;
+  } else {
+    // the optimizer skips relevance only when the match filter holds for every document,
+    // the projected score is a placeholder, see project_placeholder_relevance()
+    sr_iter_param_.relevance_proj_expr_ = nullptr;
+    sr_iter_param_.filter_expr_ = nullptr;
+  }
   sr_iter_param_.topk_limit_ = topk_limit_;
   if (OB_NOT_NULL(ir_ctdef_->field_boost_expr_)) {
     ObDatum *boost_datum = nullptr;
@@ -473,14 +480,16 @@ int ObDASLegacyTRMergeIter::init_daat_iter_param(ObTextDaaTParam &iter_param)
   iter_param.allocator_ = &myself_allocator_;
   iter_param.mode_flag_ = ir_ctdef_->mode_flag_;
   iter_param.function_lookup_mode_ = function_lookup_mode_;
-  iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
-      = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+  if (ir_ctdef_->need_calc_relevance()) {
+    iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
+        = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+  }
   iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;
   iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = ir_ctdef_->need_avg_doc_len_est();
   iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
   iter_param.bm25_param_est_ctx_.avg_doc_token_cnt_expr_ = ir_ctdef_->avg_doc_token_cnt_expr_;
   iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
-  if (query_tokens_.count() == 0) {
+  if (query_tokens_.count() == 0 || !ir_ctdef_->need_calc_relevance()) {
     // do nothing
   } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -524,8 +533,10 @@ int ObDASLegacyTRMergeIter::init_taat_iter_param(ObTextTaaTParam &iter_param)
   iter_param.allocator_ = &myself_allocator_;
   iter_param.mode_flag_ = ir_ctdef_->mode_flag_;
   iter_param.function_lookup_mode_ = function_lookup_mode_;
-  iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
-      = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+  if (ir_ctdef_->need_calc_relevance()) {
+    iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
+        = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+  }
   iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;
   iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = ir_ctdef_->need_avg_doc_len_est();
   iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
@@ -533,6 +544,8 @@ int ObDASLegacyTRMergeIter::init_taat_iter_param(ObTextTaaTParam &iter_param)
   iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
   if (OB_ISNULL(iter_param.dim_iter_ = dim_iter_)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (!ir_ctdef_->need_calc_relevance()) {
+    // do nothing
   } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_doc_length_est_param())) {
@@ -869,8 +882,9 @@ int ObDASLegacyTRMergeIter::inner_get_next_row()
     ret = OB_NOT_INIT;
   } else if (OB_ISNULL(sparse_retrieval_iter_)) {
     ret = OB_ERR_UNEXPECTED;
-  } else {
-    ret = sparse_retrieval_iter_->get_next_row();
+  } else if (OB_FAIL(sparse_retrieval_iter_->get_next_row())) {
+  } else if (!ir_ctdef_->need_calc_relevance() && ir_ctdef_->need_proj_relevance_score()
+             && OB_FAIL(project_placeholder_relevance(1))) {
   }
   return ret;
 }
@@ -886,6 +900,40 @@ int ObDASLegacyTRMergeIter::inner_get_next_rows(int64_t &count, int64_t capacity
     count = 0;
   } else {
     ret = sparse_retrieval_iter_->get_next_rows(capacity, count);
+    if ((OB_SUCC(ret) || OB_ITER_END == ret) && count > 0
+        && !ir_ctdef_->need_calc_relevance() && ir_ctdef_->need_proj_relevance_score()) {
+      int tmp_ret = project_placeholder_relevance(count);
+      if (OB_SUCCESS != tmp_ret) {
+        ret = tmp_ret;
+      }
+    }
+  }
+  return ret;
+}
+
+// Projects score 1 for the returned documents when relevance is not calculated, as
+// ObDASTRDaatIter does.
+int ObDASLegacyTRMergeIter::project_placeholder_relevance(const int64_t count)
+{
+  int ret = OB_SUCCESS;
+  sql::ObExpr *relevance_proj_expr = ir_ctdef_->relevance_proj_col_;
+  sql::ObEvalCtx *eval_ctx = ir_rtdef_->eval_ctx_;
+  if (OB_ISNULL(relevance_proj_expr) || OB_ISNULL(eval_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    sql::ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+    if (eval_ctx->is_vectorized()) {
+      sql::ObBitVector &evaluated_flags = relevance_proj_expr->get_evaluated_flags(*eval_ctx);
+      for (int64_t i = 0; i < count; ++i) {
+        guard.set_batch_idx(i);
+        relevance_proj_expr->locate_datum_for_write(*eval_ctx).set_double(1.0);
+        evaluated_flags.set(i);
+      }
+    } else {
+      guard.set_batch_idx(0);
+      relevance_proj_expr->locate_datum_for_write(*eval_ctx).set_double(1.0);
+    }
+    relevance_proj_expr->set_evaluated_projected(*eval_ctx);
   }
   return ret;
 }

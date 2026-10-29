@@ -2417,6 +2417,9 @@ int ObLogPlan::allocate_access_path(AccessPath *ap,
             match_filters,
             table_scan_filters,
             scan))) {
+        } else if (!ap->vec_idx_info_.has_vec_index() && !ap->domain_idx_info_.has_func_lookup()
+                   && table_scan_filters.empty() && ap->pushdown_filters_.empty()
+                   && OB_FAIL(check_text_retrieval_need_relevance(*scan))) {
         } else if (ap->vec_idx_info_.has_vec_index() && ap->vec_idx_info_.vec_extra_info_.use_iter_filter()
                   && OB_FAIL(table_scan_filters.push_back(scan->get_text_retrieval_info().pushdown_match_filter_))) {
         } else if (OB_FAIL(scan->set_table_scan_filters(table_scan_filters))) {
@@ -12055,6 +12058,59 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
       if (OB_FAIL(scan_filters.push_back(curr_filter))) {
       }
     }
+  }
+  return ret;
+}
+
+// A natural language full-text scan returns only documents that contain a query token, and the
+// score of each of them is a sum of positive BM25 terms. So MATCH(...), MATCH(...) > 0 and
+// 0 < MATCH(...) hold for every returned document. When the pushed down match filter is the only
+// condition, these are the only uses of the score and the query only counts rows, the score
+// changes nothing in the result and is not calculated.
+int ObLogPlan::check_text_retrieval_need_relevance(ObLogTableScan &scan)
+{
+  int ret = OB_SUCCESS;
+  ObTextRetrievalInfo &tr_info = scan.get_text_retrieval_info();
+  const ObDMLStmt *stmt = get_stmt();
+  const ObSelectStmt *sel_stmt = nullptr;
+  bool is_count_only = false;
+  bool need_calc = true;
+  ObSEArray<ObExprConstraint, 2> constraints;
+  if (OB_ISNULL(stmt) || OB_ISNULL(get_optimizer_context().get_query_ctx())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(tr_info.match_expr_) || OB_ISNULL(tr_info.pushdown_match_filter_)
+             || !stmt->is_select_stmt()
+             || 1 != stmt->get_table_size()
+             || 1 != stmt->get_condition_size()
+             || stmt->get_condition_expr(0) != tr_info.pushdown_match_filter_
+             || 1 != stmt->get_match_exprs().count()
+             || 0 != stmt->get_subquery_expr_size()
+             || T_FUN_MATCH_AGAINST != tr_info.match_expr_->get_expr_type()
+             || NATURAL_LANGUAGE_MODE != tr_info.match_expr_->get_mode_flag()) {
+    // calculate relevance
+  } else if (FALSE_IT(sel_stmt = static_cast<const ObSelectStmt *>(stmt))) {
+  } else if (sel_stmt->is_scala_group_by() && !sel_stmt->has_having()) {
+    is_count_only = true;
+    for (int64_t i = 0; is_count_only && i < sel_stmt->get_select_item_size(); ++i) {
+      const ObRawExpr *expr = sel_stmt->get_select_item(i).expr_;
+      is_count_only = nullptr != expr && T_FUN_COUNT == expr->get_expr_type();
+    }
+    for (int64_t i = 0; is_count_only && i < sel_stmt->get_aggr_item_size(); ++i) {
+      const ObRawExpr *expr = sel_stmt->get_aggr_item(i);
+      is_count_only = nullptr != expr && T_FUN_COUNT == expr->get_expr_type();
+    }
+  }
+  if (OB_FAIL(ret) || !is_count_only) {
+  } else if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
+                                                                   stmt,
+                                                                   tr_info.match_expr_,
+                                                                   need_calc,
+                                                                   constraints))) {
+  } else if (need_calc) {
+  } else if (OB_FAIL(append_array_no_dup(get_optimizer_context().get_query_ctx()->all_expr_constraints_,
+                                         constraints))) {
+  } else {
+    tr_info.need_calc_relevance_ = false;
   }
   return ret;
 }
