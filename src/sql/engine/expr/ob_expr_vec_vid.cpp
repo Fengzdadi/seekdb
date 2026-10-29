@@ -18,6 +18,7 @@
 
 #include "sql/engine/expr/ob_expr_vec_vid.h"
 #include "sql/engine/ob_exec_context.h"
+#include "sql/session/ob_sql_session_info.h"
 #include "share/autoincrement/ob_i_tablet_autoincrement_service.h"
 #include "share/rc/ob_server_runtime.h"
 
@@ -88,14 +89,48 @@ int ObExprVecVid::cg_expr(
     } else {
       share::ObITabletAutoincrementService *auto_inc =
           ::oceanbase::share::server_service<::oceanbase::share::ObITabletAutoincrementService>();
+      const ObSQLSessionInfo *session = eval_ctx.exec_ctx_.get_my_session();
+      VidRangeCtx *range_ctx = nullptr;
       uint64_t seq_id = 0;
       if (OB_ISNULL(auto_inc)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("tablet autoincrement service is unavailable", K(ret));
-      } else if (OB_FAIL(auto_inc->next_value(tablet_id, seq_id))) {
-      } else {
+      } else if (OB_ISNULL(session) || !session->get_ddl_info().is_ddl()
+                 || ObExpr::INVALID_EXP_CTX_ID == raw_ctx.expr_ctx_id_) {
+        if (OB_FAIL(auto_inc->next_value(tablet_id, seq_id))) {
+        }
+      } else if (OB_ISNULL(range_ctx = static_cast<VidRangeCtx *>(
+                     eval_ctx.exec_ctx_.get_expr_op_ctx(raw_ctx.expr_ctx_id_)))
+                 && OB_FAIL(eval_ctx.exec_ctx_.create_expr_op_ctx(raw_ctx.expr_ctx_id_, range_ctx))) {
+        LOG_WARN("failed to create vid range ctx", K(ret));
+      } else if (OB_ISNULL(range_ctx)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("vid range ctx is null", K(ret));
+      } else if (OB_FAIL(range_ctx->next_value(*auto_inc, tablet_id, seq_id))) {
+      }
+      if (OB_SUCC(ret)) {
         expr_datum.set_int(seq_id);
       }
+    }
+  }
+  return ret;
+}
+
+// A DDL generates the vid of every row of a tablet. Taken from the shared tablet cache, each vid would lock it, and
+// every 10000 vids would wait for the log of the next range. So the DDL reserves large ranges of its own, as the DDL
+// writers do for LOB ids and hidden primary keys.
+int ObExprVecVid::VidRangeCtx::next_value(share::ObITabletAutoincrementService &auto_inc,
+                                          const ObTabletID &tablet_id,
+                                          uint64_t &value)
+{
+  int ret = OB_SUCCESS;
+  static const uint64_t VID_RANGE_SIZE = 500L * 10000L;
+  if (range_.tablet_id_ != tablet_id || OB_EAGAIN == range_.next_value(value)) {
+    if (OB_FAIL(auto_inc.next_interval(tablet_id, VID_RANGE_SIZE, range_))) {
+      range_.reset();
+      LOG_WARN("failed to reserve a vid range", K(ret), K(tablet_id));
+    } else if (OB_FAIL(range_.next_value(value))) {
+      LOG_WARN("reserved vid range is empty", K(ret), K_(range));
     }
   }
   return ret;

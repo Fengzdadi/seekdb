@@ -27,6 +27,7 @@ class ObTabletID;
 }
 namespace share
 {
+struct ObTabletCacheInterval;
 
 // Stable allocation interface for callers that need a value but must not know
 // about the Storage cache, leader lookup, RPC, retry, or persistence details.
@@ -38,6 +39,12 @@ public:
   virtual int next_value(
       const common::ObTabletID &tablet_id,
       uint64_t &value) = 0;
+  // Reserves a range of at least count values, outside the shared cache, for
+  // the caller to hand out on its own.
+  virtual int next_interval(
+      const common::ObTabletID &tablet_id,
+      const uint64_t count,
+      ObTabletCacheInterval &interval) = 0;
 };
 
 } // namespace share

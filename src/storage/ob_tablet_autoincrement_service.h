@@ -143,6 +143,16 @@ public:
   {
     return get_autoinc_seq(tablet_id, value);
   }
+  int next_interval(
+      const common::ObTabletID &tablet_id,
+      const uint64_t count,
+      ObTabletCacheInterval &interval) override
+  {
+    interval.reset();
+    interval.tablet_id_ = tablet_id;
+    interval.cache_size_ = count;
+    return get_tablet_cache_interval(interval);
+  }
   int copy_sequences_for_fork(
       const common::ObIArray<common::ObTabletID> &source_tablet_ids,
       const common::ObIArray<common::ObTabletID> &destination_tablet_ids,

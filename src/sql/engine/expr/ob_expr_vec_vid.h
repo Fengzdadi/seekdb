@@ -17,14 +17,32 @@
 #ifndef OCEANBASE_SRC_SQL_ENGINE_EXPR_OB_EXPR_VEC_VID_H_
 #define OCEANBASE_SRC_SQL_ENGINE_EXPR_OB_EXPR_VEC_VID_H_
 #include "sql/engine/expr/ob_expr_operator.h"
+#include "share/ob_tablet_autoincrement_param.h"
 
 namespace oceanbase
 {
+namespace share
+{
+class ObITabletAutoincrementService;
+}
 namespace sql
 {
 class ObExprVecVid : public ObFuncExprOperator
 {
 public:
+  // The vids a DDL generates for a tablet, taken from a range reserved for them.
+  class VidRangeCtx : public ObExprOperatorCtx
+  {
+  public:
+    VidRangeCtx() : ObExprOperatorCtx(), range_() {}
+    virtual ~VidRangeCtx() {}
+    int next_value(share::ObITabletAutoincrementService &auto_inc,
+                   const common::ObTabletID &tablet_id,
+                   uint64_t &value);
+  private:
+    share::ObTabletCacheInterval range_;
+  };
+
   explicit ObExprVecVid(common::ObIAllocator &alloc);
   virtual ~ObExprVecVid() {}
   virtual int calc_result_typeN(ObExprResType &type,
@@ -36,6 +54,7 @@ public:
                            int64_t param_num,
                            common::ObExprCtx &expr_ctx) const override;
   virtual common::ObCastMode get_cast_mode() const override { return CM_NULL_ON_WARN;}
+  virtual bool need_rt_ctx() const override { return true; }
   virtual int cg_expr(
       ObExprCGCtx &expr_cg_ctx,
       const ObRawExpr &raw_expr,
