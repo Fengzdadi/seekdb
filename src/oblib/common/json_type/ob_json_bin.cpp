@@ -232,11 +232,9 @@ int ObJsonBin::get_key(uint64_t index, common::ObString &key_out) const
   return ret;
 }
 
-int ObJsonBin::create_new_binary(ObIJsonBase *value, ObJsonBin *&new_bin) const
+int ObJsonBin::alloc_new_binary(ObIJsonBase *value, ObJsonBin *&new_bin) const
 {
   INIT_SUCC(ret);
-  ObString sub;
-  bool is_seek_only = get_seek_flag();
   common::ObIAllocator *allocator = NULL;
   void *buf = NULL;
   if (value != NULL) { // use stack memory
@@ -249,11 +247,21 @@ int ObJsonBin::create_new_binary(ObIJsonBase *value, ObJsonBin *&new_bin) const
     buf = allocator->alloc(sizeof(ObJsonBin));
     if (OB_ISNULL(buf)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
-    }   
+    }
   }
 
-  if (OB_FAIL(ret)) {
-  } else if (OB_FALSE_IT(new_bin = new (buf) ObJsonBin(allocator))) {
+  if (OB_SUCC(ret)) {
+    new_bin = new (buf) ObJsonBin(allocator);
+  }
+  return ret;
+}
+
+int ObJsonBin::create_new_binary(ObIJsonBase *value, ObJsonBin *&new_bin) const
+{
+  INIT_SUCC(ret);
+  bool is_seek_only = get_seek_flag();
+
+  if (OB_FAIL(alloc_new_binary(value, new_bin))) {
   } else if (!(json_type() == ObJsonNodeType::J_ARRAY || json_type() == ObJsonNodeType::J_OBJECT || ObJsonVerType::is_opaque_or_string(json_type()))) {
     if (OB_FAIL(reset_child(*new_bin, meta_.type_, pos_, meta_.entry_size_))) {
     } else {
@@ -328,6 +336,18 @@ int ObJsonBin::get_array_element(uint64_t index, ObIJsonBase *&value) const
   ObJsonBin *new_bin = NULL;
 
   if (OB_FAIL(check_valid_array_op(index))) {
+  } else if (is_seek_only_ && ObJBVerType::J_ARRAY_V0 == get_vertype()) {
+    // With no node stack to carry over, the new binary starts at the element. element() would
+    // first parse this array's header again only to read the same location from it.
+    uint64_t offset = 0;
+    uint8_t value_type = 0;
+    if (OB_FAIL(get_element_v0_location(index, offset, value_type))) {
+    } else if (OB_FAIL(alloc_new_binary(value, new_bin))) {
+    } else if (OB_FAIL(reset_child(*new_bin, value_type, offset, entry_var_type()))) {
+    } else {
+      new_bin->set_seek_flag(true);
+      value = new_bin;
+    }
   } else if (OB_FAIL(create_new_binary(value, new_bin))) {
   } else if (! is_seek_only_ && OB_FAIL(new_bin->node_stack_.copy(this->node_stack_))) {
   } else if (OB_FAIL(new_bin->element(index))) {
@@ -2175,13 +2195,13 @@ int ObJsonBin::lookup(const ObString &key)
   return ret;
 }
 
-int ObJsonBin::get_element_v0(size_t index, uint64_t *get_addr_only)
+int ObJsonBin::get_element_v0_location(size_t index, uint64_t &offset, uint8_t &value_type) const
 {
   INIT_SUCC(ret);
-  uint64_t offset = pos_;
   uint64_t value_offset = 0;
-  uint8_t value_type = 0;
   uint64_t value_entry_offset = get_value_entry_offset(index);
+  offset = pos_;
+  value_type = 0;
 
   if (OB_FAIL(get_value_entry(index, value_offset, value_type))) {
   } else if (OB_JSON_TYPE_IS_INLINE(value_type)) {
@@ -2195,8 +2215,16 @@ int ObJsonBin::get_element_v0(size_t index, uint64_t *get_addr_only)
   } else {
     offset = pos_ + value_offset;
   }
+  return ret;
+}
 
-  if (OB_FAIL(ret)) {
+int ObJsonBin::get_element_v0(size_t index, uint64_t *get_addr_only)
+{
+  INIT_SUCC(ret);
+  uint64_t offset = pos_;
+  uint8_t value_type = 0;
+
+  if (OB_FAIL(get_element_v0_location(index, offset, value_type))) {
   } else if (OB_NOT_NULL(get_addr_only)) {
     *get_addr_only = offset;
   } else if (OB_NOT_NULL(allocator_) && !is_seek_only_

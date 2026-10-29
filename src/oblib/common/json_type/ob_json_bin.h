@@ -984,6 +984,7 @@ private:
   int parse_doc_header_v0();
   int init_ctx();
 
+  int get_element_v0_location(size_t index, uint64_t &offset, uint8_t &value_type) const;
   int get_element_v0(size_t index, uint64_t *get_addr_only);
   int get_element_in_array(size_t index, uint64_t *get_addr_only = NULL);
   int get_element_in_object(size_t index, uint64_t *get_addr_only = NULL);
@@ -995,6 +996,7 @@ private:
   int check_valid_array_op(ObIJsonBase *value) const;
   int check_valid_object_op(uint64_t index) const;
   int check_valid_array_op(uint64_t index) const;
+  int alloc_new_binary(ObIJsonBase *value, ObJsonBin *&new_bin) const;
   int create_new_binary(ObIJsonBase *value, ObJsonBin *&new_bin) const;
 
   // data access layer function
