@@ -231,8 +231,8 @@ int oceanbase::storage::ObDDLStorageUtil::report_ddl_sstable_checksum(
       } else {
         break;
       }
+      ob_usleep(100L * 1000L); // wait only before retrying a failed report
     }
-    ob_usleep(100L * 1000L);
   }
   return ret;
 }
