@@ -1,4 +1,7 @@
 /* seekdb <-> hipVS bridge: plain-C CAGRA kNN; all cuVS/ROCm deps live here. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* CPU_COUNT */
+#endif
 #include "seekdb_cuvs_bridge.h"
 #include <cuvs/core/c_api.h>
 #include <cuvs/neighbors/cagra.h>
@@ -9,6 +12,9 @@
 #include <cuda_runtime.h>
 #endif
 #include <pthread.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +64,50 @@ static void sk_drop_search_buffers(sk_cuvs_index* h)
   h->qd = 0; h->nd = 0; h->dd = 0;
   h->q_cap = h->n_cap = h->d_cap = 0;
 }
+
+#ifdef __linux__
+/* The CPUs this process may use: its affinity mask, lowered to the cgroup's CPU quota when one is set. */
+static long sk_slot_cpus(void)
+{
+  cpu_set_t set;
+  long n = sched_getaffinity(0, sizeof(set), &set) == 0 ? CPU_COUNT(&set) : 0;
+  long quota = -1, period = 0;
+  char q[32];
+  FILE* f = fopen("/sys/fs/cgroup/cpu.max", "r"); /* cgroup v2: "<quota|max> <period>" */
+  if (f) {
+    if (fscanf(f, "%31s %ld", q, &period) == 2 && strcmp(q, "max") != 0) quota = atol(q);
+    fclose(f);
+  } else if ((f = fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r"))) { /* cgroup v1 */
+    if (fscanf(f, "%ld", &quota) != 1) quota = -1;
+    fclose(f);
+    if ((f = fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r"))) {
+      if (fscanf(f, "%ld", &period) != 1) period = 0;
+      fclose(f);
+    }
+  }
+  if (quota > 0 && period > 0) {
+    long by_quota = (quota + period - 1) / period;
+    if (n <= 0 || by_quota < n) n = by_quota;
+  }
+  return n;
+}
+
+/* OpenMP's default team size counts the affinity mask only, so in a slot capped by a CPU quota instead of a cpuset,
+ * NN-descent and CAGRA's graph optimize would start one thread per host CPU. Part of every NN-descent iteration runs
+ * on a std::thread hipVS starts itself, which takes the runtime's global default, not an omp_set_num_threads() made
+ * on the build thread; only OMP_NUM_THREADS, read when the runtime first starts, reaches it. This runs when seekdb
+ * loads the bridge, before it starts any thread, and keeps an OMP_NUM_THREADS from the environment. */
+__attribute__((constructor)) static void sk_cap_openmp_threads(void)
+{
+  char buf[24];
+  long n;
+  if (getenv("OMP_NUM_THREADS") != NULL) return;
+  n = sk_slot_cpus();
+  if (n <= 0) return;
+  snprintf(buf, sizeof(buf), "%ld", n);
+  setenv("OMP_NUM_THREADS", buf, 0);
+}
+#endif
 
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
