@@ -115,9 +115,10 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
       /* More effort than V5's itopk max(512, 4k) and width 4 wins back the recall that capping
-       * NN-descent costs the graph (on the A100 proxy, for 5-10% more time per query). */
-      size_t required_itopk = (size_t)topk * 8;
-      if (required_itopk < 1024) required_itopk = 1024;
+       * NN-descent costs the graph, with room to spare for data harder than the proxies; multi-CTA
+       * it costs little (RX 7900 XTX: 0.60-0.63 ms per search at 2048, 0.53-0.58 at 1024). */
+      size_t required_itopk = (size_t)topk * 16;
+      if (required_itopk < 2048) required_itopk = 2048;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
       sp->search_width = 8;
       /* hipVS's search params start on the single-CTA kernel (algo 0), which rejects itopk above
