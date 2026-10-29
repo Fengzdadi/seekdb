@@ -200,10 +200,13 @@ int ObStringDiffDecoder::batch_decode(
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(buf = static_cast<char *>(ctx.allocator_->alloc(buf_size * row_cap)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
-    } else {
-      for (int64_t i = 0; i < row_cap; ++i) {
-        header_->copy_string(ShortLeftToRight(), std::logical_not<uint8_t>(),
-            header_->common_data(), buf + i * buf_size);
+    } else if (row_cap > 0) {
+      // The common parts are the same in every row. They are filled in once and copied with the
+      // whole string, whose other parts are overwritten below for every row that is used.
+      header_->copy_string(ShortLeftToRight(), std::logical_not<uint8_t>(),
+          header_->common_data(), buf);
+      for (int64_t i = 1; i < row_cap; ++i) {
+        ShortLeftToRight()(buf, buf + i * buf_size, string_size);
       }
     }
 
