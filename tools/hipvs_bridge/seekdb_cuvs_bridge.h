@@ -25,6 +25,18 @@ int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 void  seekdb_cuvs_free(void* handle);
 int seekdb_cuvs_serialize(void* handle, const char* filename);
 void* seekdb_cuvs_deserialize(const char* filename, long n, long dim);
+
+/* Graph-level persistence (snapshot format OBCUVS03), avoiding a second copy of
+ * the dataset in the snapshot:
+ *  - seekdb_cuvs_graph_degree: degree of the built CAGRA graph (0 on error).
+ *  - seekdb_cuvs_copy_graph: copies the n x degree uint32 graph to host memory.
+ *  - seekdb_cuvs_load: rebuilds a searchable index on the GPU from a host
+ *    dataset (n x dim f32) and its CAGRA graph (n x degree uint32), the same
+ *    index layout cuvsCagraBuild produces. Both inputs may be freed afterwards. */
+long  seekdb_cuvs_graph_degree(void* handle);
+int   seekdb_cuvs_copy_graph(void* handle, unsigned int* out_graph);
+void* seekdb_cuvs_load(const float* base, long n, long dim,
+                       const unsigned int* graph, long degree);
 #ifdef __cplusplus
 }
 #endif

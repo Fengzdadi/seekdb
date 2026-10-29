@@ -10,6 +10,7 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
   cuvsResources_t        res;
@@ -139,6 +140,90 @@ fail_res:
   cuvsResourcesDestroy(index->res);
 fail:
   fprintf(stderr, "[seekdb_cuvs] deserialize failed: %s\n", cuvsGetLastErrorText());
+  free(index);
+  return NULL;
+}
+
+long seekdb_cuvs_graph_degree(void* handle)
+{
+  sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  int64_t degree = 0;
+  if (!index || cuvsCagraIndexGetGraphDegree(index->idx, &degree) != CUVS_SUCCESS) return 0;
+  return (long)degree;
+}
+
+int seekdb_cuvs_copy_graph(void* handle, unsigned int* out_graph)
+{
+  sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  if (!index || !out_graph) return 1;
+  DLManagedTensor graph;
+  memset(&graph, 0, sizeof(graph));
+  if (cuvsCagraIndexGetGraph(index->idx, &graph) != CUVS_SUCCESS) {
+    fprintf(stderr, "[seekdb_cuvs] get graph failed: %s\n", cuvsGetLastErrorText());
+    return 2;
+  }
+  int rc = 0;
+  const DLTensor* t = &graph.dl_tensor;
+  if (t->ndim != 2 || t->dtype.code != kDLUInt || t->dtype.bits != 32 || t->strides ||
+      t->shape[0] != index->n || t->shape[1] <= 0) {
+    rc = 3;
+  } else if (cuvsStreamSync(index->res) != CUVS_SUCCESS) {
+    rc = 5;
+  } else if (cudaMemcpy(out_graph, (const char*)t->data + t->byte_offset,
+                        sizeof(unsigned int) * t->shape[0] * t->shape[1],
+                        cudaMemcpyDefault) != cudaSuccess) {
+    rc = 4;
+  }
+  if (graph.deleter) graph.deleter(&graph);
+  if (rc) fprintf(stderr, "[seekdb_cuvs] copy graph rc=%d\n", rc);
+  return rc;
+}
+
+void* seekdb_cuvs_load(const float* base, long n, long dim, const unsigned int* graph, long degree)
+{
+  if (!base || !graph || n <= 0 || dim <= 0 || degree <= 0) return NULL;
+  sk_cuvs_index* index = (sk_cuvs_index*)calloc(1, sizeof(*index));
+  if (!index) return NULL;
+  /* Host tensors: the index copies both into device memory it owns. */
+  DLManagedTensor dset, gt;
+  int64_t ds[2] = {n, dim}, gs[2] = {n, degree};
+  memset(&dset, 0, sizeof(dset));
+  dset.dl_tensor.data = (void*)base;
+  dset.dl_tensor.device.device_type = kDLCPU;
+  dset.dl_tensor.ndim = 2;
+  dset.dl_tensor.dtype.code = kDLFloat; dset.dl_tensor.dtype.bits = 32; dset.dl_tensor.dtype.lanes = 1;
+  dset.dl_tensor.shape = ds;
+  gt = dset;
+  gt.dl_tensor.data = (void*)graph;
+  gt.dl_tensor.dtype.code = kDLUInt;
+  gt.dl_tensor.shape = gs;
+  if (cuvsResourcesCreate(&index->res) != CUVS_SUCCESS) goto fail;
+  if (cuvsCagraIndexParamsCreate(&index->ip) != CUVS_SUCCESS) goto fail_res;
+  if (cuvsCagraIndexCreate(&index->idx) != CUVS_SUCCESS) goto fail_ip;
+  if (cuvsCagraIndexFromArgs(index->res, L2Expanded, &gt, &dset, index->idx) != CUVS_SUCCESS) goto fail_idx;
+  {
+    int64_t actual_n = 0, actual_dim = 0, actual_degree = 0;
+    if (cuvsCagraIndexGetSize(index->idx, &actual_n) != CUVS_SUCCESS ||
+        cuvsCagraIndexGetDims(index->idx, &actual_dim) != CUVS_SUCCESS ||
+        cuvsCagraIndexGetGraphDegree(index->idx, &actual_degree) != CUVS_SUCCESS ||
+        actual_n != n || actual_dim != dim || actual_degree != degree) {
+      fprintf(stderr, "[seekdb_cuvs] loaded shape mismatch: %ld x %ld deg %ld, expected %ld x %ld deg %ld\n",
+              (long)actual_n, (long)actual_dim, (long)actual_degree, n, dim, degree);
+      goto fail_idx;
+    }
+  }
+  if (cuvsStreamSync(index->res) != CUVS_SUCCESS) goto fail_idx;
+  index->n = n;
+  index->dim = dim;
+  return index;
+fail_idx:
+  cuvsCagraIndexDestroy(index->idx);
+fail_ip:
+  cuvsCagraIndexParamsDestroy(index->ip);
+fail_res:
+  cuvsResourcesDestroy(index->res);
+fail:
+  fprintf(stderr, "[seekdb_cuvs] load failed: %s\n", cuvsGetLastErrorText());
   free(index);
   return NULL;
 }
