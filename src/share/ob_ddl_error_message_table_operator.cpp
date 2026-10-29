@@ -20,10 +20,61 @@
 #include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "share/ob_ddl_sim_point.h"
 #include "share/ob_share_util.h"
+#include "lib/lock/ob_thread_cond.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::share::schema;
 using namespace oceanbase::common;
+
+namespace
+{
+// wakes up the sessions that wait for the results of ddl tasks, see ObDDLErrorMessageTableOperator::wait_report()
+struct DDLErrorMessageReportNotifier
+{
+  DDLErrorMessageReportNotifier() : report_seq_(0)
+  {
+    (void)cond_.init(ObWaitEventIds::DEFAULT_COND_WAIT);
+  }
+  ObThreadCond cond_;
+  int64_t report_seq_;
+};
+
+// never destroyed, as sessions may still wait on it while the server exits
+DDLErrorMessageReportNotifier &get_ddl_error_message_report_notifier()
+{
+  alignas(DDLErrorMessageReportNotifier) static char buf[sizeof(DDLErrorMessageReportNotifier)];
+  static DDLErrorMessageReportNotifier *notifier = new (buf) DDLErrorMessageReportNotifier();
+  return *notifier;
+}
+
+void notify_ddl_error_message_reported()
+{
+  DDLErrorMessageReportNotifier &notifier = get_ddl_error_message_report_notifier();
+  if (OB_LIKELY(notifier.cond_.is_inited())) {
+    ObThreadCondGuard guard(notifier.cond_);
+    ATOMIC_INC(&notifier.report_seq_);
+    (void)notifier.cond_.broadcast();
+  }
+}
+} // namespace
+
+int64_t ObDDLErrorMessageTableOperator::get_report_seq()
+{
+  return ATOMIC_LOAD(&get_ddl_error_message_report_notifier().report_seq_);
+}
+
+void ObDDLErrorMessageTableOperator::wait_report(const int64_t seen_report_seq, const int64_t max_wait_us)
+{
+  DDLErrorMessageReportNotifier &notifier = get_ddl_error_message_report_notifier();
+  if (OB_UNLIKELY(!notifier.cond_.is_inited())) {
+    ob_usleep(static_cast<useconds_t>(max_wait_us));
+  } else {
+    ObThreadCondGuard guard(notifier.cond_);
+    if (seen_report_seq == ATOMIC_LOAD(&notifier.report_seq_)) {
+      (void)notifier.cond_.wait_us(max_wait_us);
+    }
+  }
+}
 
 ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage::~ObBuildDDLErrorMessage()
 {
@@ -354,6 +405,7 @@ int ObDDLErrorMessageTableOperator::report_ddl_error_message(const ObBuildDDLErr
         } else if (affected_rows > 2) {
           ret = OB_ERR_UNEXPECTED;
         } else {
+          notify_ddl_error_message_reported();
           LOG_INFO("process ddl error message report success", K(ret), K(task_id), K(schema_version), K(table_id), K(addr), K(error_message), K(update_sql.ptr()));
         }
       }

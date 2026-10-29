@@ -76,6 +76,7 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
 
     int tmp_ret = OB_SUCCESS;
     while (OB_SUCC(ret)) {
+      const int64_t report_seq = ObDDLErrorMessageTableOperator::get_report_seq();
       if (OB_SUCCESS == ObDDLErrorMessageTableOperator::get_ddl_error_message(task_id, -1 /* target_object_id */, unused_addr, false /* is_ddl_retry_task */, *GCTX.sql_proxy_, error_message, unused_user_msg_len)) {
         ret = error_message.ret_code_;
         if (OB_SUCCESS != ret) {
@@ -116,7 +117,8 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
           ret = OB_TIMEOUT;
           FORWARD_USER_ERROR(ret, "DDL execution status is undecided, please check later if it finishes successfully or not.");
         } else {
-          ob_usleep(retry_interval);
+          // returns early when a ddl result is reported
+          ObDDLErrorMessageTableOperator::wait_report(report_seq, retry_interval);
         }
       }
     }
