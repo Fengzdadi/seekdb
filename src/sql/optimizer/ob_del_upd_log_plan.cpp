@@ -1041,8 +1041,8 @@ int ObDelUpdLogPlan::create_online_ddl_plan(ObLogicalOperator *&top,
     }
   } else {
     bool is_input_ordered = false;
-    if (OB_FAIL(check_vec_snapshot_input_ordered(*top, exch_info, sort_keys, is_input_ordered))) {
-      LOG_WARN("failed to check vector index snapshot input order", K(ret));
+    if (OB_FAIL(check_vec_aux_input_ordered(*top, exch_info, sort_keys, is_input_ordered))) {
+      LOG_WARN("failed to check vector index aux table input order", K(ret));
     } else if (OB_FAIL(allocate_stat_collector_as_top(top,
         ObStatCollectorType::SAMPLE_SORT, sample_sort_keys,
         table_partition_info->get_part_level()))) {
@@ -1066,16 +1066,17 @@ int ObDelUpdLogPlan::create_online_ddl_plan(ObLogicalOperator *&top,
   return ret;
 }
 
-// A vector index snapshot table is keyed by the data table's virtual VEC_KEY() column, which is
-// always NULL, followed by the data table's rowkey. With one worker on a non-partitioned table,
-// the forward scan of the primary table reads its only tablet as one granule, the stat collector
-// takes no sample, and one channel carries the rows to the only insert worker, so they arrive in
-// the snapshot table's rowkey order and the sort, which would spill every vector, can be skipped.
-// Any other plan keeps the sort.
-int ObDelUpdLogPlan::check_vec_snapshot_input_ordered(const ObLogicalOperator &top,
-                                                      const ObExchangeInfo &exch_info,
-                                                      const ObIArray<OrderItem> &sort_keys,
-                                                      bool &is_ordered)
+// Two aux tables of a vector index are keyed by the data table's rowkey: the rowkey_vid table by
+// the rowkey alone, and the snapshot table by the data table's virtual VEC_KEY() column, which is
+// always NULL, followed by the rowkey. With one worker on a non-partitioned table, the forward scan
+// of the primary table reads its only tablet as one granule, the stat collector takes no sample,
+// and one channel carries the rows to the only insert worker, so they arrive in the aux table's
+// rowkey order and the sort, which would spill every row, can be skipped. Without the sort the
+// insert also writes rows while the scan still reads them. Any other plan keeps the sort.
+int ObDelUpdLogPlan::check_vec_aux_input_ordered(const ObLogicalOperator &top,
+                                                 const ObExchangeInfo &exch_info,
+                                                 const ObIArray<OrderItem> &sort_keys,
+                                                 bool &is_ordered)
 {
   int ret = OB_SUCCESS;
   is_ordered = false;
@@ -1104,7 +1105,8 @@ int ObDelUpdLogPlan::check_vec_snapshot_input_ordered(const ObLogicalOperator &t
     LOG_WARN("table item of insert stmt is null", K(ret));
   } else if (OB_FAIL(schema_guard->get_table_schema(table_item->ddl_table_id_, index_schema))) {
     LOG_WARN("failed to get index schema", K(ret), K(table_item->ddl_table_id_));
-  } else if (OB_ISNULL(index_schema) || !index_schema->is_vec_index_snapshot_data_type()) {
+  } else if (OB_ISNULL(index_schema) || !(index_schema->is_vec_index_snapshot_data_type()
+                                           || index_schema->is_vec_rowkey_vid_type())) {
   } else if (OB_FAIL(schema_guard->get_table_schema(index_schema->get_data_table_id(), data_schema))) {
     LOG_WARN("failed to get data table schema", K(ret), K(index_schema->get_data_table_id()));
   } else if (OB_ISNULL(data_schema)) {
@@ -1113,6 +1115,9 @@ int ObDelUpdLogPlan::check_vec_snapshot_input_ordered(const ObLogicalOperator &t
   } else {
     const ObRowkeyInfo &index_rowkey = index_schema->get_rowkey_info();
     const ObRowkeyInfo &data_rowkey = data_schema->get_rowkey_info();
+    // the snapshot table's rowkey starts with the VEC_KEY() column, the rowkey_vid table's with the
+    // data table's rowkey
+    const int64_t key_offset = index_schema->is_vec_index_snapshot_data_type() ? 1 : 0;
     const ObIArray<ObRawExpr*> &conv_exprs = ins_stmt->get_column_conv_exprs();
     const ObIArray<ObColumnRefRawExpr*> &column_exprs = ins_stmt->get_insert_table_info().column_exprs_;
     const ObRowkeyColumn *key_column = NULL;
@@ -1130,24 +1135,25 @@ int ObDelUpdLogPlan::check_vec_snapshot_input_ordered(const ObLogicalOperator &t
                || scan->get_ref_table_id() != data_schema->get_table_id()
                || !is_ascending_direction(scan->get_scan_direction())) {
       keep_sort_reason = "not a forward scan of the primary table";
-    } else if (index_rowkey.get_size() != data_rowkey.get_size() + 1
+    } else if (index_rowkey.get_size() != data_rowkey.get_size() + key_offset
                || sort_keys.count() != index_rowkey.get_size()
                || conv_exprs.count() != column_exprs.count()) {
       keep_sort_reason = "sort keys are not the rowkey";
-    } else if (OB_ISNULL(key_column = index_rowkey.get_column(0))) {
+    } else if (1 == key_offset && OB_ISNULL(key_column = index_rowkey.get_column(0))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("rowkey column is null", K(ret));
-    } else if (OB_ISNULL(key_column_schema = data_schema->get_column_schema(key_column->column_id_))
-               || !key_column_schema->is_vec_hnsw_key_column()
-               || !key_column_schema->is_virtual_generated_column()) {
+    } else if (1 == key_offset
+               && (OB_ISNULL(key_column_schema = data_schema->get_column_schema(key_column->column_id_))
+                   || !key_column_schema->is_vec_hnsw_key_column()
+                   || !key_column_schema->is_virtual_generated_column())) {
       // the key column is filled from the data table's virtual VEC_KEY() column
       keep_sort_reason = "first rowkey column is not VEC_KEY()";
     } else {
-      // sort key i must be the insert's conversion of rowkey column i, which after the VEC_KEY()
-      // column must be rowkey column i - 1 of the data table
+      // sort key i must be the insert's conversion of rowkey column i, which after any VEC_KEY()
+      // column must be rowkey column i - key_offset of the data table
       for (int64_t i = 0; OB_SUCC(ret) && NULL == keep_sort_reason && i < index_rowkey.get_size(); ++i) {
         const ObRowkeyColumn *index_column = index_rowkey.get_column(i);
-        const ObRowkeyColumn *data_column = 0 == i ? NULL : data_rowkey.get_column(i - 1);
+        const ObRowkeyColumn *data_column = i < key_offset ? NULL : data_rowkey.get_column(i - key_offset);
         key_idx = i;
         sort_column_id = OB_INVALID_ID;
         for (int64_t j = 0; OB_SUCC(ret) && OB_INVALID_ID == sort_column_id && j < conv_exprs.count(); ++j) {
@@ -1160,22 +1166,29 @@ int ObDelUpdLogPlan::check_vec_snapshot_input_ordered(const ObLogicalOperator &t
           }
         }
         if (OB_FAIL(ret)) {
-        } else if (OB_ISNULL(index_column) || (0 != i && OB_ISNULL(data_column))) {
+        } else if (OB_ISNULL(index_column) || (i >= key_offset && OB_ISNULL(data_column))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("rowkey column is null", K(ret), K(i), KP(index_column), KP(data_column));
         } else if (!is_ascending_direction(sort_keys.at(i).order_type_)) {
           keep_sort_reason = "descending sort key";
         } else if (sort_column_id != index_column->column_id_) {
           keep_sort_reason = "sort key is not the rowkey column";
-        } else if (0 != i && (data_column->column_id_ != index_column->column_id_
-                              || ObOrderType::ASC != data_column->order_)) {
+        } else if (i >= key_offset && (data_column->column_id_ != index_column->column_id_
+                                       || ObOrderType::ASC != data_column->order_)) {
           keep_sort_reason = "rowkey differs from the data table's";
         }
       }
       is_ordered = OB_SUCC(ret) && NULL == keep_sort_reason;
     }
-    if (OB_SUCC(ret)) {
+    if (OB_FAIL(ret)) {
+    } else if (1 == key_offset) {
       LOG_INFO("decide the vector index snapshot ddl sort", "skip_sort", is_ordered,
+               "reason", NULL == keep_sort_reason ? "rows arrive in rowkey order" : keep_sort_reason,
+               K(index_schema->get_table_id()), "top", top.get_name(), K(top.get_parallel()),
+               K(exch_info.parallel_), KP(scan), K(sort_keys.count()), K(index_rowkey.get_size()),
+               K(key_idx), K(sort_column_id));
+    } else {
+      LOG_INFO("decide the vector index rowkey_vid ddl sort", "skip_sort", is_ordered,
                "reason", NULL == keep_sort_reason ? "rows arrive in rowkey order" : keep_sort_reason,
                K(index_schema->get_table_id()), "top", top.get_name(), K(top.get_parallel()),
                K(exch_info.parallel_), KP(scan), K(sort_keys.count()), K(index_rowkey.get_size()),

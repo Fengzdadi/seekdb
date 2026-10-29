@@ -140,10 +140,10 @@ public:
                              bool is_pdml_update_split,
                              IndexDMLInfo *index_dml_info);
 
-  int check_vec_snapshot_input_ordered(const ObLogicalOperator &top,
-                                       const ObExchangeInfo &exch_info,
-                                       const ObIArray<OrderItem> &sort_keys,
-                                       bool &is_ordered);
+  int check_vec_aux_input_ordered(const ObLogicalOperator &top,
+                                  const ObExchangeInfo &exch_info,
+                                  const ObIArray<OrderItem> &sort_keys,
+                                  bool &is_ordered);
 
   int get_ddl_sample_sort_column_count(int64_t &sample_sort_column_count);
 
