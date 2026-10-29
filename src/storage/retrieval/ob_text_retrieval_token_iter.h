@@ -147,6 +147,17 @@ public:
   OB_INLINE bool has_relevance() const { return nullptr != relevance_expr_; }
   OB_INLINE double curr_relevance() const { return relevance_.get_data()[cur_idx_]; }
   OB_INLINE const ObDatum &curr_id() const { return doc_id_.get_data()[cur_idx_].get_datum(); }
+  // get_next_row() without a call while the loaded batch has rows left
+  OB_INLINE int next_row()
+  {
+    int ret = OB_SUCCESS;
+    if (OB_LIKELY(cur_idx_ + 1 < count_)) {
+      ++cur_idx_;
+    } else {
+      ret = get_next_row();
+    }
+    return ret;
+  }
 private:
   int save_relevances_and_docids();
   int save_docids();

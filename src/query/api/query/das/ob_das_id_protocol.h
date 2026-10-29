@@ -39,8 +39,26 @@ public:
   void reset();
 
   int hash(uint64_t &hash_val) const;
-  const common::ObDatum &get_datum() const;
-  int from_datum(const common::ObDatum &datum);
+  OB_INLINE const common::ObDatum &get_datum() const { return datum_; }
+  // Same as deep copying the datum into buf_. Ids of at least one word are copied in words, the
+  // last word may overlap the one before it.
+  OB_INLINE int from_datum(const common::ObDatum &datum)
+  {
+    int ret = common::OB_SUCCESS;
+    const uint32_t len = datum.len_;
+    if (OB_LIKELY(!datum.is_null() && len >= sizeof(uint64_t) && len <= OB_DOC_ID_EXT_SIZE)) {
+      for (uint32_t pos = 0; pos + sizeof(uint64_t) < len; pos += sizeof(uint64_t)) {
+        MEMCPY(buf_ + pos, datum.ptr_ + pos, sizeof(uint64_t));
+      }
+      MEMCPY(buf_ + len - sizeof(uint64_t), datum.ptr_ + len - sizeof(uint64_t), sizeof(uint64_t));
+      datum_.pack_ = datum.pack_;
+      datum_.ptr_ = buf_;
+    } else {
+      int64_t dummy_pos = 0;
+      ret = datum_.deep_copy(datum, buf_, OB_DOC_ID_EXT_SIZE, dummy_pos);
+    }
+    return ret;
+  }
   int from_obj(const common::ObObj &obj);
 
   ObDocIdExt &operator=(const ObDocIdExt &other);

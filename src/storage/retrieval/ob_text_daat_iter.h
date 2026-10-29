@@ -57,6 +57,7 @@ public:
       mode_flag_(sql::ObMatchAgainstMode::NATURAL_LANGUAGE_MODE),
       function_lookup_mode_(false),
       use_linear_merge_(false),
+      is_binary_id_(false),
       id_cmp_func_(nullptr),
       token_iters_(nullptr),
       dim_relevances_(nullptr),
@@ -79,6 +80,8 @@ protected:
 private:
   int init_linear_merge();
   void reuse_linear_merge();
+  OB_INLINE int cmp_id(const ObDatum &l, const ObDatum &r, int &cmp_ret) const;
+  int merge_rows(int64_t &count);
   int init_batch_filter();
   int filter_buffered_rows(const int64_t begin, const int64_t end, int64_t &new_end);
 protected:
@@ -91,6 +94,7 @@ private:
   // visited in the same order as the heap pops them: by doc id, then by dim index.
   static const int64_t LINEAR_MERGE_MAX_DIM_CNT = 8;
   bool use_linear_merge_;
+  bool is_binary_id_; // id_cmp_func_ compares binary strings, see cmp_id()
   common::ObDatumCmpFuncType id_cmp_func_;
   ObTextRetrievalDaaTTokenIter **token_iters_;
   double *dim_relevances_;

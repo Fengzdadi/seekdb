@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_text_daat_iter.h"
+#include "share/datum/ob_datum_cmp_func_def.h"
 
 namespace oceanbase
 {
@@ -59,6 +60,8 @@ int ObTextDaaTIter::init_linear_merge()
     } else {
       // same comparison as the merge heap, see ObSRMergeCmp::init
       id_cmp_func_ = basic_funcs->null_first_cmp_;
+      is_binary_id_ = (ObVarcharType == id_meta.type_ || ObCharType == id_meta.type_)
+                      && CS_TYPE_BINARY == id_meta.cs_type_;
       token_iters_ = static_cast<ObTextRetrievalDaaTTokenIter **>(iters_buf);
       dim_relevances_ = static_cast<double *>(relevances_buf);
       active_dims_ = static_cast<int64_t *>(active_buf);
@@ -96,7 +99,7 @@ int ObTextDaaTIter::fill_merge_heap()
     for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
       const int64_t iter_idx = round_iter_idxes[i];
       ObTextRetrievalDaaTTokenIter *token_iter = token_iters_[iter_idx];
-      if (OB_FAIL(token_iter->get_next_row())) {
+      if (OB_FAIL(token_iter->next_row())) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {
           LOG_WARN("fail to get next row from dim iter", K(ret), K(iter_idx));
         } else {
@@ -133,6 +136,19 @@ int ObTextDaaTIter::fill_merge_heap()
   return ret;
 }
 
+// Same result as id_cmp_func_. For binary strings it is ObNullSafeDatumStrCmp, whose result does not
+// depend on trailing spaces, and its comparison of two valid strings is inlined here.
+OB_INLINE int ObTextDaaTIter::cmp_id(const ObDatum &l, const ObDatum &r, int &cmp_ret) const
+{
+  int ret = OB_SUCCESS;
+  if (!is_binary_id_ || l.is_null() || r.is_null() || nullptr == l.ptr_ || nullptr == r.ptr_) {
+    ret = id_cmp_func_(l, r, cmp_ret, nullptr);
+  } else {
+    ret = common::datum_cmp::ObDatumStrCmpImpl::cmp(l, r, cmp_ret, CS_TYPE_BINARY, false);
+  }
+  return ret;
+}
+
 int ObTextDaaTIter::collect_dims_by_id(const ObDatum *&id_datum, double &relevance, bool &got_valid_id)
 {
   int ret = OB_SUCCESS;
@@ -145,35 +161,35 @@ int ObTextDaaTIter::collect_dims_by_id(const ObDatum *&id_datum, double &relevan
     int64_t *round_iter_idxes = next_round_iter_idxes_.get_data();
     relevance = 0.0;
     got_valid_id = false;
-    // the first dim with the smallest doc id, dims before it have bigger doc ids
-    int64_t min_pos = 0;
+    // The dims with the smallest doc id are collected in one pass, in ascending dim order: a
+    // smaller doc id restarts the collected dims, and the first collected dim has the smallest id.
+    const int64_t first_idx = next_round_cnt_;
+    int64_t end_idx = first_idx + 1;
+    round_iter_idxes[first_idx] = active_dims_[0];
     const ObDatum *min_id = iter_ids[active_dims_[0]];
     for (int64_t pos = 1; OB_SUCC(ret) && pos < active_dim_cnt_; ++pos) {
-      const ObDatum *id = iter_ids[active_dims_[pos]];
+      const int64_t dim_idx = active_dims_[pos];
+      const ObDatum *id = iter_ids[dim_idx];
       int cmp_ret = 0;
-      if (OB_FAIL(id_cmp_func_(*id, *min_id, cmp_ret, nullptr))) {
+      if (OB_FAIL(cmp_id(*id, *min_id, cmp_ret))) {
         LOG_WARN("fail to compare doc id", K(ret));
       } else if (cmp_ret < 0) {
-        min_pos = pos;
         min_id = id;
+        round_iter_idxes[first_idx] = dim_idx;
+        end_idx = first_idx + 1;
+      } else if (0 == cmp_ret) {
+        round_iter_idxes[end_idx++] = dim_idx;
       }
     }
-    int64_t iter_idx = active_dims_[min_pos];
-    for (int64_t pos = min_pos; OB_SUCC(ret) && pos < active_dim_cnt_; ++pos) {
-      const int64_t dim_idx = active_dims_[pos];
-      int cmp_ret = 0;
-      if (pos > min_pos && OB_FAIL(id_cmp_func_(*iter_ids[dim_idx], *min_id, cmp_ret, nullptr))) {
-        LOG_WARN("fail to compare doc id", K(ret));
-      } else if (0 != cmp_ret) {
-      } else if (OB_FAIL(relevance_collector_->collect_one_dim(dim_idx, dim_relevances_[dim_idx]))) {
+    for (int64_t i = first_idx; OB_SUCC(ret) && i < end_idx; ++i) {
+      const int64_t dim_idx = round_iter_idxes[i];
+      if (OB_FAIL(relevance_collector_->collect_one_dim(dim_idx, dim_relevances_[dim_idx]))) {
         LOG_WARN("fail to collect dim", K(ret), K(dim_idx));
-      } else {
-        iter_idx = dim_idx;
-        round_iter_idxes[next_round_cnt_++] = dim_idx;
       }
     }
     if (OB_SUCC(ret)) {
-      id_datum = iter_ids[iter_idx];
+      next_round_cnt_ = end_idx;
+      id_datum = iter_ids[round_iter_idxes[end_idx - 1]];
       if (OB_ISNULL(id_datum)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (OB_FAIL(relevance_collector_->get_result(relevance, got_valid_id))) {
@@ -230,7 +246,9 @@ int ObTextDaaTIter::do_one_merge_round(int64_t &count)
   // the eval ctx is not null if use_batch_filter_ is set
   const int64_t end_idx = !use_batch_filter_ ? 0 : MIN(MIN(batch_capacity_, iter_param_->max_batch_size_),
                                                        iter_param_->eval_ctx_->max_batch_size_);
-  if (!use_batch_filter_ || iter_param_->limit_param_->is_valid() || count >= end_idx) {
+  if (!iter_param_->need_filter() && !iter_param_->limit_param_->is_valid()) {
+    ret = merge_rows(count);
+  } else if (!use_batch_filter_ || iter_param_->limit_param_->is_valid() || count >= end_idx) {
     ret = ObSRDaaTIterImpl::do_one_merge_round(count);
   } else {
     // Without a limit or an offset every row that passes the filter is output, in merge order,
@@ -257,6 +275,34 @@ int ObTextDaaTIter::do_one_merge_round(int64_t &count)
       if (OB_SUCCESS != tmp_ret) {
         ret = tmp_ret;
       }
+    }
+  }
+  return ret;
+}
+
+// Without a filter or a limit every valid row is output, as filter_on_demand() and cache_result()
+// do, so rows are merged up to the capacity in one loop.
+int ObTextDaaTIter::merge_rows(int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  const int64_t end_idx = MIN(batch_capacity_, iter_param_->max_batch_size_);
+  ObDocIdExt *buffered_ids = buffered_domain_ids_.get_data();
+  double *buffered_relevances = buffered_relevances_.get_data();
+  while (OB_SUCC(ret) && count < end_idx) {
+    const ObDatum *id_datum = nullptr;
+    double relevance = 0.0;
+    bool got_valid_id = false;
+    if (OB_FAIL(fill_merge_heap())) {
+    } else if (OB_FAIL(collect_dims_by_id(id_datum, relevance, got_valid_id))) {
+    } else if (!got_valid_id) {
+    } else if (OB_UNLIKELY(count >= buffered_domain_ids_.count() || count >= buffered_relevances_.count())) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      ++input_row_cnt_;
+      buffered_ids[count].from_datum(*id_datum);
+      buffered_relevances[count] = relevance;
+      ++count;
+      ++output_row_cnt_;
     }
   }
   return ret;
@@ -309,6 +355,7 @@ int ObTextDaaTIter::filter_buffered_rows(const int64_t begin, const int64_t end,
 void ObTextDaaTIter::reset()
 {
   use_linear_merge_ = false;
+  is_binary_id_ = false;
   id_cmp_func_ = nullptr;
   token_iters_ = nullptr;
   dim_relevances_ = nullptr;
