@@ -120,6 +120,10 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       if (required_itopk < 1024) required_itopk = 1024;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
       sp->search_width = 8;
+      /* hipVS's search params start on the single-CTA kernel (algo 0), which rejects itopk above
+       * 512 and, for these single-row queries on gfx1100, is about 5x slower than multi-CTA at
+       * the same recall. */
+      sp->algo = MULTI_CTA;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
