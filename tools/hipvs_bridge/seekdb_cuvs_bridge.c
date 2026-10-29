@@ -78,9 +78,10 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   /* NN-descent's lists are as wide as the final graph: within the iteration cap, 128-wide lists
    * get closer to converged than 256-wide ones, so the graph is cheaper and no worse. */
   h->ip->intermediate_graph_degree = 128;
-  /* NN-descent iteration cap; 20 is cuVS's default. Its early stop needs fewer than
+  /* NN-descent iteration cap, half cuVS's default of 20: with these lists and the search's itopk
+   * below, ten iterations keep nearly all of twenty's recall. Its early stop needs fewer than
    * 0.0001 * n * dim / 100 updates among every 100th row within one iteration. */
-  h->ip->nn_descent_niter = 20;
+  h->ip->nn_descent_niter = 10;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
