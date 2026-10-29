@@ -398,14 +398,23 @@ int ObLogDelUpd::generate_ddl_slice_id_expr()
   ObLogExchange *producer = nullptr;
   ObOptimizerContext &ctx = get_plan()->get_optimizer_context();
   if (OB_FAIL(ObRawExprUtils::build_pseudo_ddl_slice_id(ctx.get_expr_factory(), *ctx.get_session_info(), ddl_slice_expr))) {
-  } else if (OB_ISNULL(sort_op = get_child(ObLogicalOperator::first_child)) || sort_op->get_type() != log_op_def::LOG_SORT // sort op
-      || OB_ISNULL(consumer = sort_op->get_child(ObLogicalOperator::first_child)) || consumer->get_type() != log_op_def::LOG_EXCHANGE // exchange consumer
-      || OB_ISNULL(producer = static_cast<ObLogExchange *>(consumer->get_child(ObLogicalOperator::first_child))) || !producer->is_producer()) {
+  } else if (OB_ISNULL(consumer = get_child(ObLogicalOperator::first_child))) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get ddl slice id producer failed", K(ret), KPC(sort_op), KPC(consumer), KPC(producer));
+    LOG_WARN("child of ddl insert is null", K(ret));
   } else {
-    ddl_slice_id_expr_ = ddl_slice_expr;
-    producer->set_ddl_slice_id_expr(ddl_slice_expr);
+    if (log_op_def::LOG_SORT == consumer->get_type()) {
+      // sort op, which is left out when the rows already arrive in rowkey order
+      sort_op = consumer;
+      consumer = sort_op->get_child(ObLogicalOperator::first_child);
+    }
+    if (OB_ISNULL(consumer) || consumer->get_type() != log_op_def::LOG_EXCHANGE // exchange consumer
+        || OB_ISNULL(producer = static_cast<ObLogExchange *>(consumer->get_child(ObLogicalOperator::first_child))) || !producer->is_producer()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get ddl slice id producer failed", K(ret), KPC(sort_op), KPC(consumer), KPC(producer));
+    } else {
+      ddl_slice_id_expr_ = ddl_slice_expr;
+      producer->set_ddl_slice_id_expr(ddl_slice_expr);
+    }
   }
   return ret;
 }
