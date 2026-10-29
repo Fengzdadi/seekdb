@@ -387,6 +387,9 @@ int ObHNSWSerializeCallback::operator()(const char *data, const int64_t data_siz
   lob_param.offset_ = 0;
   lob_param.scan_backward_ = false;
   lob_param.is_total_quantity_log_ = true;
+  // Let the appends submit this transaction's redo as it builds up, as LOB DML does. Nothing else in the transaction
+  // writes, so otherwise all of the snapshot's redo is submitted at commit, after the index is built.
+  lob_param.try_flush_redo_ = true;
   lob_param.sql_mode_ = SMO_DEFAULT;
   lob_param.timeout_ = param.timeout_;
   lob_param.lob_common_ = nullptr;
